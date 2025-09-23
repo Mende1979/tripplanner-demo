@@ -1,4 +1,5 @@
 "use client";
+"use client";
 import { useState } from "react";
 
 interface Proposal { title: string; description: string; link: string; }
