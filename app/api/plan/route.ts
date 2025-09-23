@@ -1,39 +1,44 @@
 // app/api/plan/route.ts
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 
-export async function POST(req: NextRequest) {
-  // (opzionale) Basic Auth via env
-  const requiredUser = process.env.PLAN_API_USER;
-  const requiredPass = process.env.PLAN_API_PASS;
-  if (requiredUser && requiredPass) {
-    const auth = req.headers.get("authorization");
-    if (!auth?.startsWith("Basic ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const decoded = Buffer.from(auth.slice(6), "base64").toString("utf8");
-    const [u, p] = decoded.split(":");
-    if (u !== requiredUser || p !== requiredPass) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+type PlanRequest = {
+  origin?: string;
+  destinations?: string[];
+  paxAdults?: number;
+  paxChildren?: number;
+  startDate?: string;
+  endDate?: string;
+  flexibleDays?: number;
+  budgetTotal?: number;
+  currency?: string;
+  transport?: string[];
+};
 
-  // Leggi input
-  const body = await req.json().catch(() => ({} as any));
-  const origin = body.origin ?? "Bologna, IT";
-  const destinations: string[] =
-    Array.isArray(body.destinations) && body.destinations.length
-      ? body.destinations.slice(0, 3)
-      : ["Valencia", "Lisbona", "Corsica"];
-  const paxAdults = Number(body.paxAdults ?? 2);
-  const paxChildren = Number(body.paxChildren ?? 0);
+type ApiLinks = { transport?: string; hotel?: string; itinerary?: string };
+type ApiHotel = { name: string; area?: string };
+type ApiProposal = {
+  destination: string;
+  title: string;
+  nights: number;
+  priceTotal: number;
+  currency: string;
+  transportSummary: string;
+  hotel: ApiHotel;
+  topThings: string[];
+  links: ApiLinks;
+};
+
+export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => ({}))) as PlanRequest;
+
+  const budgetTotal = Math.max(1, Number(body.budgetTotal ?? 1500));
+  const paxAdults = Math.max(1, Number(body.paxAdults ?? 2));
   const startDate = body.startDate ?? "";
   const endDate = body.endDate ?? "";
-  const flexibleDays = Number(body.flexibleDays ?? 0);
-  const budgetTotal = Number(body.budgetTotal ?? 1500);
   const currency = body.currency ?? "EUR";
 
-  // TODO: qui in futuro farai le chiamate reali (voli/hotel/poi/meteo).
-  // Per ora rispondiamo con mock “coerenti”.
   const mk = (
     destination: string,
     title: string,
@@ -42,9 +47,9 @@ export async function POST(req: NextRequest) {
     transportSummary: string,
     hotelName: string,
     hotelArea: string,
-    links: { transport: string; hotel: string; itinerary: string },
+    links: ApiLinks,
     topThings: string[]
-  ) => ({
+  ): ApiProposal => ({
     destination,
     title,
     nights,
@@ -56,7 +61,7 @@ export async function POST(req: NextRequest) {
     links,
   });
 
-  const proposals = [
+  const proposals: ApiProposal[] = [
     mk(
       "Valencia, Spagna",
       "Città, mare e paella · 4 notti",
@@ -67,12 +72,7 @@ export async function POST(req: NextRequest) {
       "Ruzafa/centro",
       {
         transport: "https://www.skyscanner.it/",
-        hotel:
-          "https://www.booking.com/searchresults.html?ss=Valencia&checkin=" +
-          (startDate || "") +
-          "&checkout=" +
-          (endDate || "") +
-          `&group_adults=${paxAdults}`,
+        hotel: `https://www.booking.com/searchresults.html?ss=Valencia&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
         itinerary: "https://goo.gl/maps/",
       },
       [
@@ -93,12 +93,7 @@ export async function POST(req: NextRequest) {
       "Baixa/Chiado",
       {
         transport: "https://www.skyscanner.it/",
-        hotel:
-          "https://www.booking.com/searchresults.html?ss=Lisbona&checkin=" +
-          (startDate || "") +
-          "&checkout=" +
-          (endDate || "") +
-          `&group_adults=${paxAdults}`,
+        hotel: `https://www.booking.com/searchresults.html?ss=Lisbona&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
         itinerary: "https://goo.gl/maps/",
       },
       ["Belém", "Alfama & tram 28", "Miradouro", "LX Factory", "Pastéis"]
@@ -113,12 +108,7 @@ export async function POST(req: NextRequest) {
       "Piana/Porto",
       {
         transport: "https://www.directferries.it/",
-        hotel:
-          "https://www.booking.com/searchresults.html?ss=Corsica&checkin=" +
-          (startDate || "") +
-          "&checkout=" +
-          (endDate || "") +
-          `&group_adults=${paxAdults}`,
+        hotel: `https://www.booking.com/searchresults.html?ss=Corsica&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
         itinerary: "https://goo.gl/maps/",
       },
       [
