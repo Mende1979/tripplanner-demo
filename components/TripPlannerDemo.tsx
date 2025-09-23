@@ -90,3 +90,23 @@ export default function TripPlannerDemo() {
       setLoading(false);
     }
   };
+
+
+
+  return (
+    <div style={{maxWidth: 720, margin: "0 auto"}}>
+      <h1>TripPlanner Demo</h1>
+      <input placeholder="Dove vuoi andare?" value={destination} onChange={e=>setDestination(e.target.value)} />
+      <button onClick={handleSubmit} disabled={loading}>{loading? "Sto cercando..." : "Genera 3 proposte"}</button>
+      <div>
+        {proposals.map((p,i)=>(
+          <div key={i}>
+            <h3>{p.title}</h3>
+            <p>{p.description}</p>
+            <a href={p.link} target="_blank">Prenota →</a>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
