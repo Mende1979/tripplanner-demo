@@ -1,4 +1,4 @@
-import TripPlannerDemo from "@/components/TripPlannerDemo";
+import TripPlannerDemo from "../components/TripPlannerDemo";
 
 export default function Home() {
   return (
