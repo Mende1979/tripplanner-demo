@@ -230,7 +230,7 @@ function googleLinks(city: string, checkin: string, checkout: string, lat?: numb
   return { hotels, maps };
 }
 
-/** ---------- LLM: sceglie 5 mete mare (Structured Outputs) ---------- */
+/** ---------- LLM: sceglie 5 mete mare (JSON via prompt, niente response_format) ---------- */
 type LlmPick = {
   city: string;
   country: string;
@@ -246,59 +246,54 @@ async function llmPickDestinations(input: {
 }) : Promise<LlmPick[]> {
   if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
 
-  const schema = {
-    name: 'destination_picks',
-    schema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        picks: {
-          type: 'array',
-          minItems: 5,
-          maxItems: 5,
-          items: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              city: { type: 'string' },
-              country: { type: 'string' },
-              reason: { type: 'string' },
-              expected_lodging_per_night_eur: { type: 'number' },
-              family_score: { type: 'number', minimum: 0, maximum: 1 },
-              novelty_score: { type: 'number', minimum: 0, maximum: 1 }
-            },
-            required: ['city','country','reason','expected_lodging_per_night_eur','family_score','novelty_score']
-          }
-        }
-      },
-      required: ['picks']
-    },
-    strict: true
-  };
-
   const prefs = [
     `Origine: ${input.origin}`,
     input.month ? `Mese: ${input.month}` : `Data inizio: ${input.startDate}`,
     `Notti: ${input.nights}`,
     `Persone: ${input.party}`,
     input.budget ? `Budget: €${input.budget}` : 'Budget: non specificato',
-    `Tema: mare, family-friendly, diversificazione geografica, focus Europa e bacino Med (ma considera anche alternative economiche con mare).`,
+    `Tema: mare, family-friendly, diversificazione geografica, focus Europa/Med; stima alloggio per NOTTE per l’intero gruppo (hotel o appart. medio).`,
   ].join('\n');
 
-  const r = await openai.responses.create({
+  const sys = [
+    'Sei un agente viaggi.',
+    'Devi restituire ESATTAMENTE 5 destinazioni di mare adatte a famiglie, diversificate per Paese/area.',
+    'Per ciascuna meta fornisci una motivazione sintetica.',
+    'Stima il costo alloggio per NOTTE per tutto il gruppo (non lusso).',
+    'Rispondi SOLO con un JSON valido con questo schema:',
+    '{ "picks": [ { "city": "...", "country": "...", "reason": "...", "expected_lodging_per_night_eur": 200, "family_score": 0.9, "novelty_score": 0.6 }, ... (totale 5) ] }',
+  ].join('\n');
+
+  const completion = await openai.chat.completions.create({
     model: 'gpt-4o-2024-08-06',
-    instructions: [
-      'Sei un agente viaggi. In base alle preferenze fornite, proponi ESATTAMENTE 5 destinazioni di mare adatte a famiglie.',
-      'Preferisci mete con buon rapporto qualità/prezzo in alta stagione, sabbia e servizi family.',
-      'Diversifica per paese/area: evita 5 mete nello stesso paese.',
-      'Stima il costo alloggio per NOTTE per l’intero gruppo (hotel o appartamento medio, non lusso).'
-    ].join('\n'),
-    input: `Preferenze:\n${prefs}\n\nRestituisci 5 destinazioni come JSON conforme allo schema.`,
-    response_format: { type: 'json_schema', json_schema: schema }
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: sys },
+      { role: 'user', content: `Preferenze:\n${prefs}\n\nRestituisci SOLO il JSON richiesto, nessun testo fuori dal JSON.` }
+    ],
   });
-  // Con Structured Outputs possiamo leggere direttamente il testo e fare JSON.parse in sicurezza. :contentReference[oaicite:3]{index=3}
-  const parsed = JSON.parse(r.output_text) as LlmOut;
-  return parsed.picks;
+
+  const content = completion.choices[0]?.message?.content?.trim() || '{}';
+  let parsed: LlmOut;
+  try {
+    parsed = JSON.parse(content) as LlmOut;
+  } catch {
+    // fallback minimale: prova a ripulire blocchi "```json"
+    const cleaned = content.replace(/```json|```/g, '').trim();
+    parsed = JSON.parse(cleaned) as LlmOut;
+  }
+
+  // Validazione minima
+  if (!parsed || !Array.isArray(parsed.picks)) throw new Error('LLM output malformato');
+  // Prendi esattamente 5
+  const picks = parsed.picks.filter(p =>
+    p && typeof p.city === 'string' && typeof p.country === 'string' &&
+    typeof p.reason === 'string' && Number.isFinite(p.expected_lodging_per_night_eur)
+  ).slice(0, 5);
+
+  if (picks.length < 1) throw new Error('LLM non ha restituito destinazioni valide');
+  // Se meno di 5, useremo quante ne abbiamo (evito errore duro)
+  return picks;
 }
 
 /** ---------- Handler principale ---------- */
@@ -333,7 +328,7 @@ export async function POST(req: Request) {
     }
     const { startISO, endISO } = nightsWindow(startDate, nights);
 
-    // 1) LLM seleziona 5 mete di mare (family)
+    // 1) LLM seleziona fino a 5 mete di mare (family)
     const llmPicks = await llmPickDestinations({ origin: originInput, month: monthStr || undefined, startDate: startDate || undefined, nights, party, budget });
 
     // 2) Per ciascuna meta: risolvi IATA, voli A/R con Amadeus, stima alloggio + link
@@ -342,11 +337,9 @@ export async function POST(req: Request) {
 
     const proposals: Proposal[] = [];
     for (const pick of llmPicks) {
-      // trova IATA città destinazione dal nome
       const destIata = await amadeusCityOrAirportCode(`${pick.city}`);
       if (!destIata) continue;
 
-      // voli A/R per tutto il gruppo
       const [goList, backList] = await Promise.all([
         searchFlights(originIata, destIata, startISO, party),
         searchFlights(destIata, originIata, endISO, party),
@@ -356,11 +349,10 @@ export async function POST(req: Request) {
       const go = goList[0], back = backList[0];
       const flightTotal = Math.round(go.price + back.price);
 
-      // lookup info città
       const meta = await amadeusCityLookupByIata(destIata);
       const cityName = `${pick.city}`;
       const month = Number(startISO.slice(5,7));
-      const perNight = Math.max(60, Math.round(pick.expected_lodging_per_night_eur * seasonalFactor(month))); // usa stima LLM, scalata per stagione
+      const perNight = Math.max(60, Math.round(pick.expected_lodging_per_night_eur * seasonalFactor(month)));
       const lodgingTotal = perNight * nights;
 
       const { hotels, maps } = googleLinks(cityName, startISO, endISO, meta.lat, meta.lon);
