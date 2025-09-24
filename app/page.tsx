@@ -21,6 +21,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setRes(null);
+
     try {
       const fd = new FormData(e.currentTarget);
       const modes = fd.getAll('modes') as string[];
