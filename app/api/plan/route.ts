@@ -171,6 +171,51 @@ async function getAmadeusToken(): Promise<string> {
   return amadeusToken.token;
 }
 
+/** ===== Alias IT→IATA e IT→EN per città comuni + risoluzione IATA ===== */
+const IATA_BY_ALIAS: Record<string, string> = {
+  // Italia
+  'bologna': 'BLQ', 'roma': 'ROM', 'milano': 'MIL', 'napoli': 'NAP', 'torino': 'TRN', 'venezia': 'VCE',
+  'firenze': 'FLR', 'pisa': 'PSA', 'verona': 'VRN', 'bari': 'BRI', 'catania': 'CTA', 'palermo': 'PMO',
+  // Europa + popolari
+  'lisbona': 'LIS', 'parigi': 'PAR', 'londra': 'LON', 'barcellona': 'BCN', 'madrid': 'MAD',
+  'berlino': 'BER', 'amsterdam': 'AMS', 'bruxelles': 'BRU', 'vienna': 'VIE', 'praga': 'PRG',
+  'budapest': 'BUD', 'zurigo': 'ZRH', 'ginevra': 'GVA', 'dublino': 'DUB', 'copenaghen': 'CPH',
+  // extra comuni
+  'new york': 'NYC', 'los angeles': 'LAX', 'dubai': 'DXB', 'istanbul': 'IST', 'atene': 'ATH',
+};
+
+const EN_BY_ALIAS: Record<string, string> = {
+  'lisbona': 'Lisbon', 'roma': 'Rome', 'milano': 'Milan', 'napoli': 'Naples', 'torino': 'Turin',
+  'venezia': 'Venice', 'firenze': 'Florence', 'monaco di baviera': 'Munich', 'londra': 'London',
+  'parigi': 'Paris', 'praga': 'Prague', 'copenaghen': 'Copenhagen', 'bruxelles': 'Brussels',
+  'berlino': 'Berlin', 'amsterdam': 'Amsterdam', 'barcellona': 'Barcelona', 'vienna': 'Vienna',
+  'ginevra': 'Geneva', 'zurigo': 'Zurich', 'atene': 'Athens', 'new york': 'New York',
+};
+
+/** Risolvi: IATA diretto → alias IATA → keyword IT → keyword EN (fallback) */
+async function resolveIata(cityOrCode: string): Promise<string | null> {
+  const raw = cityOrCode.trim();
+  // se già codice IATA a 3 lettere
+  if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase();
+
+  const k = raw.toLowerCase();
+  // alias italiani direttamente a IATA
+  if (IATA_BY_ALIAS[k]) return IATA_BY_ALIAS[k];
+
+  // prova con Amadeus usando il testo così com'è (IT)
+  let code = await amadeusCityOrAirportCode(raw);
+  if (code) return code;
+
+  // prova traduzione inglese se disponibile
+  const en = EN_BY_ALIAS[k];
+  if (en) {
+    code = await amadeusCityOrAirportCode(en);
+    if (code) return code;
+  }
+  return null;
+}
+
+
 /** ===== City/Airport code ===== */
 async function amadeusCityOrAirportCode(q: string): Promise<string | null> {
   const token = await getAmadeusToken();
