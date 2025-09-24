@@ -18,15 +18,6 @@ export type TransportOption = {
   notes?: string;
 };
 
-export type LodgingOption = {
-  name: string;
-  location: string;
-  pricePerNight: number;
-  rating: number;
-  reviews: number;
-  url?: string;
-};
-
 export type EventItem = {
   title: string;
   start: YMD & HMS;
@@ -52,14 +43,7 @@ function parseISODate(d: string): YMD {
 }
 function isoToParts(iso: string): YMD & HMS {
   const dt = new Date(iso);
-  return {
-    y: dt.getFullYear(),
-    m: dt.getMonth() + 1,
-    d: dt.getDate(),
-    hh: dt.getHours(),
-    mm: dt.getMinutes(),
-    ss: dt.getSeconds(),
-  };
+  return { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate(), hh: dt.getHours(), mm: dt.getMinutes(), ss: dt.getSeconds() };
 }
 function iso8601DurationToMin(s: string): number {
   const re = /P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/;
@@ -78,13 +62,6 @@ function scoreTransport(opt: TransportOption, w_price = 0.55, w_time = 0.35, w_t
   const sTransfers = Math.max(0, 1 - (opt.transfers ?? 0) / transfersCap);
   return w_price * sPrice + w_time * sTime + w_transfers * sTransfers;
 }
-function scoreLodging(opt: LodgingOption, w_rating = 0.7, w_price = 0.3) {
-  const priceCap = 200;
-  const ratingScore = opt.rating / 5;
-  const priceScore = Math.max(0, 1 - opt.pricePerNight / priceCap);
-  const reviewsBonus = Math.min(0.1, (opt.reviews / 2000) * 0.1);
-  return w_rating * ratingScore + w_price * priceScore + reviewsBonus;
-}
 function pickBest<T>(arr: T[], score: (x: T) => number): T {
   return arr.slice().sort((a, b) => score(b) - score(a))[0];
 }
@@ -101,70 +78,48 @@ interface AmadeusLocation {
   iataCode?: string;
   geoCode?: { latitude?: number; longitude?: number };
 }
-interface AmadeusLocationsResponse {
-  data?: AmadeusLocation[];
-}
+interface AmadeusLocationsResponse { data?: AmadeusLocation[] }
 
-interface AmadeusFlightSegment {
-  departure?: { at?: string };
-  arrival?: { at?: string };
-}
-interface AmadeusItinerary {
-  duration?: string;
-  segments?: AmadeusFlightSegment[];
-}
+interface AmadeusFlightSegment { departure?: { at?: string }; arrival?: { at?: string } }
+interface AmadeusItinerary { duration?: string; segments?: AmadeusFlightSegment[] }
 interface AmadeusFlightOffer {
   itineraries?: AmadeusItinerary[];
   price?: { grandTotal?: string; total?: string };
   validatingAirlineCodes?: string[];
   carrierCode?: string;
 }
-interface AmadeusFlightOffersResponse {
-  data?: AmadeusFlightOffer[];
-}
+interface AmadeusFlightOffersResponse { data?: AmadeusFlightOffer[] }
 
 /** ===== OAuth Amadeus (cache in memoria) ===== */
 let amadeusToken: { token: string; exp: number } | null = null;
-
 async function getAmadeusToken(): Promise<string> {
-  if (!AMADEUS_KEY || !AMADEUS_SECRET) {
-    throw new Error('Missing AMADEUS_API_KEY or AMADEUS_API_SECRET');
-  }
+  if (!AMADEUS_KEY || !AMADEUS_SECRET) throw new Error('Missing AMADEUS_API_KEY or AMADEUS_API_SECRET');
   const now = Math.floor(Date.now() / 1000);
   if (amadeusToken && amadeusToken.exp - 30 > now) return amadeusToken.token;
-
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: AMADEUS_KEY,
-    client_secret: AMADEUS_SECRET,
-  });
 
   const res = await fetch(`${AMADEUS_BASE}/v1/security/oauth2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: AMADEUS_KEY, client_secret: AMADEUS_SECRET }),
     cache: 'no-store',
   });
-
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     console.error('Amadeus OAuth error:', res.status, txt);
     throw new Error(`Amadeus OAuth failed (${res.status})`);
   }
-
   const j = (await res.json()) as { access_token: string; expires_in: number };
   amadeusToken = { token: j.access_token, exp: now + j.expires_in };
   return amadeusToken.token;
 }
 
-/** ===== Airport & City Search (IATA + geocode) ===== */
+/** ===== Airport & City Search ===== */
 async function amadeusCityOrAirportCode(keyword: string): Promise<string | null> {
   const token = await getAmadeusToken();
   const url = new URL(`${AMADEUS_BASE}/v1/reference-data/locations`);
   url.searchParams.set('keyword', keyword);
   url.searchParams.set('subType', 'CITY,AIRPORT');
   url.searchParams.set('view', 'LIGHT');
-
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
   if (!res.ok) return null;
   const j = (await res.json()) as AmadeusLocationsResponse;
@@ -173,38 +128,30 @@ async function amadeusCityOrAirportCode(keyword: string): Promise<string | null>
   const apt = data.find((x) => x.subType === 'AIRPORT' && x.iataCode)?.iataCode;
   return city || apt || null;
 }
-
-interface CityGeo { lat: number; lon: number }
-async function amadeusCityGeo(keyword: string): Promise<CityGeo | null> {
+async function amadeusCityGeo(keyword: string): Promise<{ lat: number; lon: number } | null> {
   const token = await getAmadeusToken();
   const url = new URL(`${AMADEUS_BASE}/v1/reference-data/locations`);
   url.searchParams.set('keyword', keyword);
   url.searchParams.set('subType', 'CITY,AIRPORT');
   url.searchParams.set('view', 'LIGHT');
-
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
   if (!res.ok) return null;
   const j = (await res.json()) as AmadeusLocationsResponse;
   const list = Array.isArray(j.data) ? j.data : [];
-
   const pick =
     list.find((x) => x.subType === 'CITY' && x.geoCode?.latitude && x.geoCode?.longitude) ??
     list.find((x) => x.subType === 'AIRPORT' && x.geoCode?.latitude && x.geoCode?.longitude);
-
   if (!pick?.geoCode) return null;
   return { lat: pick.geoCode.latitude!, lon: pick.geoCode.longitude! };
 }
 
 /** ===== Alias IT→IATA e IT→EN + risoluzione IATA ===== */
 const IATA_BY_ALIAS: Record<string, string> = {
-  // Italia
   bologna: 'BLQ', roma: 'ROM', milano: 'MIL', napoli: 'NAP', torino: 'TRN', venezia: 'VCE',
   firenze: 'FLR', pisa: 'PSA', verona: 'VRN', bari: 'BRI', catania: 'CTA', palermo: 'PMO',
-  // Europa + popolari
   lisbona: 'LIS', parigi: 'PAR', londra: 'LON', barcellona: 'BCN', madrid: 'MAD',
   berlino: 'BER', amsterdam: 'AMS', bruxelles: 'BRU', vienna: 'VIE', praga: 'PRG',
   budapest: 'BUD', zurigo: 'ZRH', ginevra: 'GVA', dublino: 'DUB', copenaghen: 'CPH',
-  // extra comuni
   'new york': 'NYC', 'los angeles': 'LAX', dubai: 'DXB', istanbul: 'IST', atene: 'ATH',
 };
 const EN_BY_ALIAS: Record<string, string> = {
@@ -214,16 +161,13 @@ const EN_BY_ALIAS: Record<string, string> = {
   berlino: 'Berlin', amsterdam: 'Amsterdam', barcellona: 'Barcelona', vienna: 'Vienna',
   ginevra: 'Geneva', zurigo: 'Zurich', atene: 'Athens', 'new york': 'New York',
 };
-
 async function resolveIata(cityOrCode: string): Promise<string | null> {
   const raw = cityOrCode.trim();
-  if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase(); // già IATA
+  if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase();
   const k = raw.toLowerCase();
   if (IATA_BY_ALIAS[k]) return IATA_BY_ALIAS[k];
-
   let code = await amadeusCityOrAirportCode(raw);
   if (code) return code;
-
   const en = EN_BY_ALIAS[k];
   if (en) {
     code = await amadeusCityOrAirportCode(en);
@@ -232,7 +176,7 @@ async function resolveIata(cityOrCode: string): Promise<string | null> {
   return null;
 }
 
-/** ===== Flight offers (Amadeus) ===== */
+/** ===== Flights (Amadeus) ===== */
 async function amadeusFlights(originCity: string, destCity: string, departISO: string): Promise<TransportOption[]> {
   const oCode = await resolveIata(originCity);
   const dCode = await resolveIata(destCity);
@@ -280,103 +224,14 @@ async function amadeusFlights(originCity: string, destCity: string, departISO: s
   return out;
 }
 
-/** ===== Hotel offers (Hotel List by city/geocode + Hotel Search v3) ===== */
-interface HotelListByCityResp { data?: { hotelId?: string }[] }
-interface HotelListByGeoResp { data?: { hotelId?: string }[] }
-interface HotelOffersV3Resp {
-  data?: {
-    hotel?: { hotelId?: string; name?: string; address?: { cityName?: string } };
-    offers?: { price?: { total?: string } }[];
-  }[];
-}
-
-async function amadeusHotels(city: string, dFromISO: string, dToISO: string, maxPerNight?: number): Promise<LodgingOption[]> {
-  const token = await getAmadeusToken();
-  const cityCode = await resolveIata(city);
-
-  // 1) Hotel List by City
-  let hotelIds: string[] = [];
-  if (cityCode) {
-    const listUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city`);
-    listUrl.searchParams.set('cityCode', cityCode);
-    listUrl.searchParams.set('radius', '25');
-    listUrl.searchParams.set('radiusUnit', 'KM');
-    listUrl.searchParams.set('hotelSource', 'ALL');
-    const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-    if (listRes.ok) {
-      const listJson = (await listRes.json()) as HotelListByCityResp;
-      hotelIds = (listJson.data ?? [])
-        .map(h => h.hotelId)
-        .filter((x): x is string => typeof x === 'string' && x.length > 0);
-    }
-  }
-
-  // 2) Fallback: Hotel List by Geocode
-  if (hotelIds.length === 0) {
-    const geo = await amadeusCityGeo(city);
-    if (!geo) throw new Error('No hotels found for city (no geocode)');
-    const geoUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-geocode`);
-    geoUrl.searchParams.set('latitude', String(geo.lat));
-    geoUrl.searchParams.set('longitude', String(geo.lon));
-    geoUrl.searchParams.set('radius', '25');
-    geoUrl.searchParams.set('radiusUnit', 'KM');
-    geoUrl.searchParams.set('hotelSource', 'ALL');
-    const geoRes = await fetch(geoUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-    if (!geoRes.ok) throw new Error('Hotel list by geocode failed');
-    const geoJson = (await geoRes.json()) as HotelListByGeoResp;
-    hotelIds = (geoJson.data ?? [])
-      .map(h => h.hotelId)
-      .filter((x): x is string => typeof x === 'string' && x.length > 0);
-  }
-
-  if (hotelIds.length === 0) throw new Error('No hotels found for city (test dataset may be limited)');
-
-  // 3) Hotel Search v3 (offers)
-  const nights = Math.max(1, Math.round(
-    (new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime()) / 86_400_000
-  ));
-  const offersUrl = new URL(`${AMADEUS_BASE}/v3/shopping/hotel-offers`);
-  offersUrl.searchParams.set('hotelIds', hotelIds.slice(0, 30).join(','));
-  offersUrl.searchParams.set('adults', '2');
-  offersUrl.searchParams.set('checkInDate', dFromISO);
-  offersUrl.searchParams.set('checkOutDate', dToISO);
-  offersUrl.searchParams.set('currency', 'EUR');
-
-  const offersRes = await fetch(offersUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-  if (!offersRes.ok) throw new Error('Hotel search failed');
-  const offersJson = (await offersRes.json()) as HotelOffersV3Resp;
-
-  const out: LodgingOption[] = [];
-  for (const item of offersJson.data ?? []) {
-    const hotel = item.hotel;
-    const offers = item.offers ?? [];
-    if (!hotel || offers.length === 0) continue;
-
-    const totals = offers
-      .map(o => o.price?.total)
-      .filter((t): t is string => typeof t === 'string' && t.length > 0)
-      .map(t => Number(t))
-      .filter(n => Number.isFinite(n));
-
-    if (!totals.length) continue;
-    const perNight = Math.max(1, Math.round(Math.min(...totals) / nights));
-    if (maxPerNight !== undefined && perNight > maxPerNight) continue;
-
-    out.push({
-      name: hotel.name || 'Hotel',
-      location: hotel.address?.cityName || city,
-      pricePerNight: perNight,
-      rating: 4.2, // sandbox spesso non fornisce rating reali
-      reviews: 0,
-      url: hotel.hotelId
-        ? `https://www.google.com/search?q=${encodeURIComponent((hotel.name || 'hotel') + ' ' + (hotel.address?.cityName || city))}`
-        : undefined,
-    });
-  }
-
-  if (!out.length) throw new Error('No hotels found (try different dates/city in sandbox)');
-  out.sort((a, b) => (b.rating - a.rating) || (a.pricePerNight - b.pricePerNight));
-  return out;
+/** ===== Link alloggi (Google Hotels/Maps) ===== */
+function buildHotelLinks(city: string, ci: string, co: string, lat?: number, lon?: number) {
+  const q = encodeURIComponent(city);
+  const googleHotels = `https://www.google.com/travel/hotels?hl=it&q=${q}&checkin=${ci}&checkout=${co}`;
+  const googleMaps = lat != null && lon != null
+    ? `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+    : `https://www.google.com/maps/search/?api=1&query=${q}`;
+  return { googleHotels, googleMaps };
 }
 
 /** ===== GCal & ICS ===== */
@@ -384,58 +239,32 @@ const TZID = 'Europe/Rome';
 function gcalLink(e: EventItem) {
   const base = 'https://calendar.google.com/calendar/render?action=TEMPLATE';
   const dates = `${fmtICS(e.start)}/${fmtICS(e.end)}`;
-  const params = new URLSearchParams({
-    text: e.title,
-    dates,
-    details: e.notes || '',
-    location: e.location || '',
-  });
+  const params = new URLSearchParams({ text: e.title, dates, details: e.notes || '', location: e.location || '' });
   return `${base}&${params.toString()}`;
 }
 function makeICS(title: string, events: EventItem[], alarmMin = 45) {
   const now = new Date();
-  const dtstamp = `${pad(now.getUTCFullYear(), 4)}${pad(now.getUTCMonth() + 1)}${pad(
-    now.getUTCDate(),
-  )}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}Z`;
-  const lines: string[] = [
-    'BEGIN:VCALENDAR',
-    'PRODID:-//TripPlanner AI//Transport+Lodging//IT',
-    'VERSION:2.0',
-    'CALSCALE:GREGORIAN',
-    `X-WR-CALNAME:${title}`,
-    `X-WR-TIMEZONE:${TZID}`,
-  ];
+  const dtstamp = `${pad(now.getUTCFullYear(), 4)}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}Z`;
+  const lines: string[] = ['BEGIN:VCALENDAR','PRODID:-//TripPlanner AI//Transport+Lodging//IT','VERSION:2.0','CALSCALE:GREGORIAN',`X-WR-CALNAME:${title}`,`X-WR-TIMEZONE:${TZID}`];
   for (const e of events) {
     const uid = randomUUID();
-    lines.push(
-      'BEGIN:VEVENT',
-      `UID:${uid}`,
-      `DTSTAMP:${dtstamp}`,
-      `DTSTART;TZID=${TZID}:${fmtICS(e.start)}`,
-      `DTEND;TZID=${TZID}:${fmtICS(e.end)}`,
-      `SUMMARY:${e.title}`,
-    );
+    lines.push('BEGIN:VEVENT',`UID:${uid}`,`DTSTAMP:${dtstamp}`,`DTSTART;TZID=${TZID}:${fmtICS(e.start)}`,`DTEND;TZID=${TZID}:${fmtICS(e.end)}`,`SUMMARY:${e.title}`);
     if (e.location) lines.push(`LOCATION:${e.location}`);
     const desc: string[] = [];
     if (e.notes) desc.push(e.notes);
     if (e.url) desc.push(`Link: ${e.url}`);
     if (desc.length) lines.push(`DESCRIPTION:${desc.join('\\n')}`);
-    if (alarmMin && alarmMin > 0)
-      lines.push('BEGIN:VALARM', `TRIGGER:-PT${Math.floor(alarmMin)}M`, 'ACTION:DISPLAY', 'DESCRIPTION:Promemoria', 'END:VALARM');
+    if (alarmMin && alarmMin > 0) lines.push('BEGIN:VALARM',`TRIGGER:-PT${Math.floor(alarmMin)}M`,'ACTION:DISPLAY','DESCRIPTION:Promemoria','END:VALARM');
     lines.push('END:VEVENT');
   }
   lines.push('END:VCALENDAR');
   return lines.join('\r\n') + '\r\n';
 }
 
-/** ===== Core (solo Amadeus) ===== */
+/** ===== Core ===== */
 async function pickBestTransport(origin: string, dest: string, dISO: string): Promise<TransportOption> {
   const list = await amadeusFlights(origin, dest, dISO);
   return pickBest(list, scoreTransport);
-}
-async function pickBestLodging(city: string, dFromISO: string, dToISO: string, maxPerNight?: number): Promise<LodgingOption> {
-  const list = await amadeusHotels(city, dFromISO, dToISO, maxPerNight);
-  return pickBest(list, scoreLodging);
 }
 
 /** ===== Handler ===== */
@@ -446,7 +275,6 @@ export async function POST(req: Request) {
     const dest = String(body.dest || '');
     const dFromISO = String(body.departDate || '');
     const dToISO = String(body.returnDate || '');
-    const maxPerNight = body.maxNight !== undefined ? Number(body.maxNight) : undefined;
     const alarmMin = body.alarmMin !== undefined ? Number(body.alarmMin) : 45;
 
     if (!origin || !dest || !dFromISO || !dToISO) {
@@ -458,42 +286,17 @@ export async function POST(req: Request) {
 
     const go = await pickBestTransport(origin, dest, dFromISO);
     const back = await pickBestTransport(dest, origin, dToISO);
-    const stay = await pickBestLodging(dest, dFromISO, dToISO, maxPerNight);
 
-    const ms = new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime();
-    const nights = Math.max(1, Math.round(ms / 86_400_000));
-    const totalStay = Math.round(stay.pricePerNight * nights);
+    // Link alloggi su Google
+    const geo = await amadeusCityGeo(dest); // per Maps più preciso, se disponibile
+    const { googleHotels, googleMaps } = buildHotelLinks(dest, dFromISO, dToISO, geo?.lat, geo?.lon);
 
+    // Eventi ICS (check-in/out generici)
     const events: EventItem[] = [
-      {
-        title: `Partenza ${origin} → ${dest} (${go.provider})`,
-        start: { ...go.dep, ss: 0 },
-        end: { ...go.arr, ss: 0 },
-        location: origin,
-        notes: `${go.mode} · €${Math.round(go.price)} · ${go.notes || ''}`,
-      },
-      {
-        title: `Check-in ${stay.name}`,
-        start: { ...parseISODate(dFromISO), hh: 15, mm: 0, ss: 0 },
-        end: { ...parseISODate(dFromISO), hh: 16, mm: 0, ss: 0 },
-        location: stay.location,
-        url: stay.url,
-        notes: `€${Math.round(stay.pricePerNight)}/notte · Rating ${stay.rating}/5`,
-      },
-      {
-        title: `Check-out ${stay.name}`,
-        start: { ...parseISODate(dToISO), hh: 11, mm: 0, ss: 0 },
-        end: { ...parseISODate(dToISO), hh: 11, mm: 30, ss: 0 },
-        location: stay.location,
-        url: stay.url,
-      },
-      {
-        title: `Ritorno ${dest} → ${origin} (${back.provider})`,
-        start: { ...back.dep, ss: 0 },
-        end: { ...back.arr, ss: 0 },
-        location: dest,
-        notes: `${back.mode} · €${Math.round(back.price)} · ${back.notes || ''}`,
-      },
+      { title: `Partenza ${origin} → ${dest} (${go.provider})`, start: { ...go.dep, ss: 0 }, end: { ...go.arr, ss: 0 }, location: origin, notes: `${go.mode} · €${Math.round(go.price)} · ${go.notes || ''}` },
+      { title: `Check-in hotel a ${dest}`, start: { ...parseISODate(dFromISO), hh: 15, mm: 0, ss: 0 }, end: { ...parseISODate(dFromISO), hh: 16, mm: 0, ss: 0 }, location: dest, url: googleHotels, notes: 'Apri Google Hotels/Maps per i dettagli' },
+      { title: `Check-out hotel a ${dest}`, start: { ...parseISODate(dToISO), hh: 11, mm: 0, ss: 0 }, end: { ...parseISODate(dToISO), hh: 11, mm: 30, ss: 0 }, location: dest, url: googleHotels },
+      { title: `Ritorno ${dest} → ${origin} (${back.provider})`, start: { ...back.dep, ss: 0 }, end: { ...back.arr, ss: 0 }, location: dest, notes: `${back.mode} · €${Math.round(back.price)} · ${back.notes || ''}` },
     ];
 
     const ics = makeICS(`${dest} — viaggio`, events, alarmMin);
@@ -502,9 +305,8 @@ export async function POST(req: Request) {
     return NextResponse.json({
       go: { ...go, depText: toDisplay(go.dep), arrText: toDisplay(go.arr) },
       back: { ...back, depText: toDisplay(back.dep), arrText: toDisplay(back.arr) },
-      stay,
-      nights,
-      totalStay,
+      lodging: { city: dest, googleHotels, googleMaps },
+      nights: Math.max(1, Math.round((new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime()) / 86_400_000)),
       gcalLinks,
       ics,
     });

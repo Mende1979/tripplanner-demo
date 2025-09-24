@@ -1,35 +1,28 @@
 'use client';
 import React, { useState } from 'react';
 
-// Tipi coerenti con la risposta di /api/plan
-type TransportMode = 'flight' | 'train' | 'drive';
-
+/** Tipi coerenti con la risposta della /api/plan (versione Google Lodging) */
+type TransportMode = 'flight';
 type TransportOut = {
   mode: TransportMode;
   provider: string;
-  depText: string;   // es. "18/10/2025 08:00"
-  arrText: string;   // es. "18/10/2025 10:25"
+  depText: string;
+  arrText: string;
   durationMin: number;
   transfers?: number;
   price: number;
   notes?: string;
 };
-
-type LodgingOut = {
-  name: string;
-  location: string;
-  pricePerNight: number;
-  rating: number;
-  reviews: number;
-  url?: string;
+type LodgingLinks = {
+  city: string;
+  googleHotels: string;
+  googleMaps: string;
 };
-
 type ApiResult = {
   go: TransportOut;
   back: TransportOut;
-  stay: LodgingOut;
+  lodging: LodgingLinks;
   nights: number;
-  totalStay: number;
   gcalLinks: string[];
   ics: string;
 };
@@ -47,15 +40,12 @@ export default function Home() {
 
     try {
       const fd = new FormData(e.currentTarget);
-      const modes = fd.getAll('modes').map(String); // string[]
       const payload = {
         origin: String(fd.get('origin') || ''),
         dest: String(fd.get('dest') || ''),
         departDate: String(fd.get('departDate') || ''),
         returnDate: String(fd.get('returnDate') || ''),
-        modes,
-        maxNight: fd.get('maxNight') ? Number(fd.get('maxNight')) : undefined,
-        alarmMin: fd.get('alarmMin') ? Number(fd.get('alarmMin')) : undefined,
+        alarmMin: fd.get('alarmMin') ? Number(fd.get('alarmMin')) : 45,
       };
 
       const r = await fetch('/api/plan', {
@@ -69,9 +59,7 @@ export default function Home() {
         try {
           const j: { error?: string } = await r.json();
           if (j?.error) msg = j.error;
-        } catch {
-          // ignore parse error
-        }
+        } catch {}
         setError(msg);
         return;
       }
@@ -99,8 +87,8 @@ export default function Home() {
 
   return (
     <main style={{ maxWidth: 800, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>TripPlanner — Transport + Lodging</h1>
-      <p>Trova il miglior trasporto (tempo/costo) e una sistemazione ben recensita entro budget.</p>
+      <h1>TripPlanner — Voli + Alloggi (Google)</h1>
+      <p>Trova il volo migliore (tempo/costo) e apri direttamente <b>Google Hotels</b> per scegliere e prenotare l’alloggio.</p>
 
       <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -110,7 +98,7 @@ export default function Home() {
           </label>
           <label>
             Destinazione
-            <input name="dest" defaultValue="Lisbona" required />
+            <input name="dest" defaultValue="Parigi" required />
           </label>
         </div>
 
@@ -125,22 +113,12 @@ export default function Home() {
           </label>
         </div>
 
-        <fieldset>
-          <legend>Mezzi consentiti</legend>
-          <label><input type="checkbox" name="modes" value="flight" defaultChecked /> Volo</label>{' '}
-          <label><input type="checkbox" name="modes" value="train" defaultChecked /> Treno</label>{' '}
-          <label><input type="checkbox" name="modes" value="drive" defaultChecked /> Auto</label>
-        </fieldset>
-
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <label>
-            Budget/notte (€)
-            <input type="number" name="maxNight" defaultValue={100} min={0} />
-          </label>
           <label>
             Promemoria (min)
             <input type="number" name="alarmMin" defaultValue={45} min={0} />
           </label>
+          <span />
         </div>
 
         <button type="submit" disabled={loading}>{loading ? 'Cerco…' : 'Cerca soluzioni'}</button>
@@ -152,27 +130,22 @@ export default function Home() {
         <section style={{ marginTop: 24 }}>
           <h2>Risultati</h2>
 
-          <h3>Trasporti</h3>
+          <h3>Voli</h3>
           <p>
             <b>Andata</b>: {res.go.mode.toUpperCase()} {res.go.provider} · {res.go.depText} → {res.go.arrText} · {res.go.durationMin} min ·{' '}
-            {(res.go.transfers ?? 0)} transiti · €{Math.round(res.go.price)} · {res.go.notes ?? ''}
+            {(res.go.transfers ?? 0)} scali · €{Math.round(res.go.price)} · {res.go.notes ?? ''}
           </p>
           <p>
             <b>Ritorno</b>: {res.back.mode.toUpperCase()} {res.back.provider} · {res.back.depText} → {res.back.arrText} · {res.back.durationMin} min ·{' '}
-            {(res.back.transfers ?? 0)} transiti · €{Math.round(res.back.price)} · {res.back.notes ?? ''}
+            {(res.back.transfers ?? 0)} scali · €{Math.round(res.back.price)} · {res.back.notes ?? ''}
           </p>
 
-          <h3>Sistemazione</h3>
+          <h3>Alloggi (Google)</h3>
           <p>
-            <b>{res.stay.name}</b> ({res.stay.location}) — Rating {res.stay.rating}/5 ({res.stay.reviews} recensioni)
-            <br />
-            €{Math.round(res.stay.pricePerNight)}/notte × {res.nights} = <b>€{res.totalStay}</b>
+            Soggiorno a <b>{res.lodging.city}</b> per {res.nights} notte{res.nights > 1 ? 'i' : ''}.<br />
+            Apri <a href={res.lodging.googleHotels} target="_blank" rel="noopener">Google Hotels</a> (date già impostate) e scegli la struttura.<br />
+            (Opzionale) <a href={res.lodging.googleMaps} target="_blank" rel="noopener">Apri su Google Maps</a>.
           </p>
-          {res.stay.url && (
-            <p>
-              <a href={res.stay.url} target="_blank" rel="noopener">Apri link struttura</a>
-            </p>
-          )}
 
           <p>
             <button onClick={downloadICS}>⬇️ Scarica calendario (.ics)</button>
