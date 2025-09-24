@@ -1,10 +1,9 @@
 'use client';
 import React, { useState } from 'react';
 
-type TrendArticle = { title: string; link: string; published?: string };
 type Proposal = {
   id: string;
-  destination: { city: string; country?: string; iataCity: string };
+  destination: { city: string; country?: string; iataCity: string; reason: string };
   dates: { depart: string; return: string; nights: number };
   party: number;
   flight: {
@@ -16,11 +15,9 @@ type Proposal = {
   totalEstimate: number;
   underBudget: boolean;
   budget?: number;
-  web?: { trendScore: number; articles: TrendArticle[] };
   gcalLinks: string[];
   ics: string;
 };
-
 type ApiResult = { proposals: Proposal[] };
 
 export default function Home() {
@@ -36,7 +33,6 @@ export default function Home() {
       const fd = new FormData(e.currentTarget);
       const payload = {
         origin: String(fd.get('origin') || 'Bologna'),
-        theme: String(fd.get('theme') || 'mare'),
         month: String(fd.get('month') || ''),       // YYYY-MM
         startDate: String(fd.get('startDate') || ''), // YYYY-MM-DD
         nights: Number(fd.get('nights') || 14),
@@ -44,7 +40,7 @@ export default function Home() {
         budget: fd.get('budget') ? Number(fd.get('budget')) : undefined,
       };
 
-      const r = await fetch('/api/suggest', {
+      const r = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -74,24 +70,19 @@ export default function Home() {
 
   return (
     <main style={{ maxWidth: 980, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>TripPlanner — Agent dinamico</h1>
-      <p>Il sistema sceglie <b>mete reali</b> (Amadeus Inspiration) e le ordina usando voli, budget e segnali dal web (Google News, opzionale).</p>
+      <h1>TripPlanner — Agent LLM (mare, family)</h1>
+      <p>L’LLM sceglie 5 destinazioni di mare (diversificate), noi verifichiamo i voli e generiamo stima totale + link Google Hotels.</p>
 
       <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
           <label> Partenza
             <input name="origin" defaultValue="Bologna" required />
           </label>
-          <label> Tema (hint trend)
-            <select name="theme" defaultValue="mare">
-              <option value="mare">Mare</option>
-              <option value="città">Città</option>
-              <option value="montagna">Montagna</option>
-              <option value="natura">Natura</option>
-            </select>
-          </label>
           <label> Persone
             <input type="number" name="party" defaultValue={4} min={1} />
+          </label>
+          <label> Notti
+            <input type="number" name="nights" defaultValue={14} min={1} />
           </label>
         </div>
 
@@ -102,19 +93,12 @@ export default function Home() {
           <label> Oppure data partenza
             <input type="date" name="startDate" />
           </label>
-          <label> Notti
-            <input type="number" name="nights" defaultValue={14} min={1} />
-          </label>
-        </div>
-
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <label> Budget totale (€)
             <input type="number" name="budget" defaultValue={3000} min={0} />
           </label>
-          <span />
         </div>
 
-        <button type="submit" disabled={loading}>{loading ? 'Genero…' : 'Genera 4–5 proposte'}</button>
+        <button type="submit" disabled={loading}>{loading ? 'Genero…' : 'Genera 5 proposte dall’LLM'}</button>
       </form>
 
       {!!error && <p style={{ color: 'crimson', marginTop: 12 }}>Errore: {error}</p>}
@@ -126,6 +110,9 @@ export default function Home() {
               <h3 style={{ marginTop: 0 }}>
                 {p.destination.city} ({p.destination.iataCity}) {p.underBudget ? '· ✅ entro budget' : '· ⚠️ sopra budget'}
               </h3>
+              <p style={{ margin:'6px 0' }}>
+                <b>Motivo</b>: {p.destination.reason}
+              </p>
               <p style={{ margin:'6px 0' }}>
                 <b>Date</b>: {p.dates.depart} → {p.dates.return} · {p.dates.nights} notti · <b>Persone</b>: {p.party}
               </p>
@@ -142,18 +129,6 @@ export default function Home() {
               <p style={{ margin:'6px 0' }}>
                 <b>Totale stimato</b>: €{Math.round(p.totalEstimate)} {p.budget ? `(budget €${p.budget})` : ''}
               </p>
-
-              {p.web && (
-                <div style={{ margin:'6px 0' }}>
-                  <b>Trend</b>: {(p.web.trendScore*100).toFixed(0)}%
-                  <ul>
-                    {p.web.articles.slice(0,3).map((a, i) => (
-                      <li key={i}><a href={a.link} target="_blank" rel="noopener">{a.title}</a>{a.published ? ` · ${a.published}` : ''}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
               <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
                 <button onClick={() => downloadICS(p)}>⬇️ Scarica .ics</button>
                 {p.gcalLinks.map((u, i) => (
