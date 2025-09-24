@@ -413,8 +413,8 @@ export async function GET(req: Request) {
   if (u.searchParams.get('diag') === '1') {
     return NextResponse.json({
       hasOpenAI: !!OPENAI_API_KEY,
-      hasAmadeusKey: !!AMADEUS_API_KEY,
-      hasAmadeusSecret: !!AMADEUS_API_SECRET,
+      hasAmadeusKey: !!AMADEUS_KEY,
+      hasAmadeusSecret: !!AMADEUS_SECRET,
       env: process.env.AMADEUS_ENV || 'test',
       runtime,
     });
