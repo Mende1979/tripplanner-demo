@@ -238,53 +238,97 @@ async function amadeusFlights(originCity: string, destCity: string, departISO: s
   return out;
 }
 
-/** ===== Hotel offers ===== */
+/** ===== Hotel offers (Hotel List + Hotel Search v3) ===== */
+interface HotelListByCityItem {
+  hotelId?: string;
+  name?: string;
+  address?: { cityName?: string };
+  geoCode?: { latitude?: number; longitude?: number };
+}
+interface HotelListByCityResponse {
+  data?: HotelListByCityItem[];
+}
+
+interface HotelOffersV3Price { total?: string; currency?: string }
+interface HotelOffersV3Hotel { hotelId?: string; name?: string; address?: { cityName?: string } }
+interface HotelOffersV3Item { hotel?: HotelOffersV3Hotel; offers?: { price?: HotelOffersV3Price }[] }
+interface HotelOffersV3Response { data?: HotelOffersV3Item[] }
+
 async function amadeusHotels(city: string, dFromISO: string, dToISO: string, maxPerNight?: number): Promise<LodgingOption[]> {
   const token = await getAmadeusToken();
-  const cityCode = await amadeusCityOrAirportCode(city);
+  const cityCode = await resolveIata(city);
+  if (!cityCode) throw new Error('City/IATA not found for hotels');
 
-  const url = new URL(`${AMADEUS_BASE}/v2/shopping/hotel-offers`);
-  if (cityCode) url.searchParams.set('cityCode', cityCode);
-  url.searchParams.set('checkInDate', dFromISO);
-  url.searchParams.set('checkOutDate', dToISO);
-  url.searchParams.set('adults', '2');
-  url.searchParams.set('roomQuantity', '1');
-  url.searchParams.set('currency', 'EUR');
+  // 1) Lista hotel per città (Hotel List API)
+  const listUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city`);
+  listUrl.searchParams.set('cityCode', cityCode);
+  listUrl.searchParams.set('radius', '20');           // allarga un po’ il raggio
+  listUrl.searchParams.set('radiusUnit', 'KM');
+  listUrl.searchParams.set('hotelSource', 'ALL');     // più copertura in sandbox
 
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-  if (!res.ok) throw new Error('Hotel search failed');
-  const j = (await res.json()) as AmadeusHotelOffersResponse;
+  const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+  if (!listRes.ok) throw new Error('Hotel list failed');
+  const listJson = (await listRes.json()) as HotelListByCityResponse;
+
+  const ids = (listJson.data ?? [])
+    .map(h => h.hotelId)
+    .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    .slice(0, 20); // limitiamo
+
+  if (!ids.length) throw new Error('No hotels found for city (test dataset may be limited)');
+
+  // 2) Offerte per quegli hotel (Hotel Search v3)
+  const nights = Math.max(1, Math.round(
+    (new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime()) / 86_400_000
+  ));
+
+  const offersUrl = new URL(`${AMADEUS_BASE}/v3/shopping/hotel-offers`);
+  offersUrl.searchParams.set('hotelIds', ids.join(','));
+  offersUrl.searchParams.set('adults', '2');
+  offersUrl.searchParams.set('checkInDate', dFromISO);
+  offersUrl.searchParams.set('checkOutDate', dToISO);
+  offersUrl.searchParams.set('currency', 'EUR');
+
+  const offersRes = await fetch(offersUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+  if (!offersRes.ok) throw new Error('Hotel search failed');
+  const offersJson = (await offersRes.json()) as HotelOffersV3Response;
 
   const out: LodgingOption[] = [];
-  for (const h of j.data ?? []) {
-    const hotel = h.hotel;
-    const offer = h.offers?.[0];
-    if (!hotel || !offer) continue;
+  for (const item of offersJson.data ?? []) {
+    const hotel = item.hotel;
+    const offers = item.offers ?? [];
+    if (!hotel || offers.length === 0) continue;
 
-    const avg = offer.price?.variations?.average;
-    const priceStr = avg?.base ?? avg?.total ?? offer.price?.base ?? offer.price?.total;
-    if (!priceStr) continue;
+    // prendi l’offerta più economica e calcola €/notte
+    const totals = offers
+      .map(o => o.price?.total)
+      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+      .map(t => Number(t))
+      .filter(n => Number.isFinite(n));
+    if (totals.length === 0) continue;
 
-    const perNight = Number(priceStr);
-    if (!Number.isFinite(perNight)) continue;
+    const minTotal = Math.min(...totals);
+    const perNight = Math.max(1, Math.round(minTotal / nights));
+
     if (maxPerNight !== undefined && perNight > maxPerNight) continue;
 
     out.push({
       name: hotel.name || 'Hotel',
       location: hotel.address?.cityName || city,
       pricePerNight: perNight,
-      rating: Number(hotel.rating || 4.2),
-      reviews: Number(hotel.rating || 0) > 0 ? 300 : 0,
+      rating: 4.2,                 // sandbox spesso non fornisce rating reali
+      reviews: 0,                  // idem
       url: hotel.hotelId
         ? `https://www.google.com/search?q=${encodeURIComponent((hotel.name || 'hotel') + ' ' + (hotel.address?.cityName || city))}`
         : undefined,
     });
   }
 
-  if (!out.length) throw new Error('No hotels found');
+  if (!out.length) throw new Error('No hotels found (try different dates/city in sandbox)');
   out.sort((a, b) => scoreLodging(b) - scoreLodging(a));
   return out;
 }
+
 
 /** ===== GCal & ICS ===== */
 const TZID = 'Europe/Rome';
