@@ -1,125 +1,78 @@
-// app/api/plan/route.ts
-export const runtime = "nodejs";
+import { NextResponse } from 'next/server'
+if (alarmMin && alarmMin > 0) {
+lines.push('BEGIN:VALARM', `TRIGGER:-PT${Math.floor(alarmMin)}M`, 'ACTION:DISPLAY', 'DESCRIPTION:Promemoria', 'END:VALARM')
+}
+lines.push('END:VEVENT')
+}
+lines.push('END:VCALENDAR')
+return lines.join('\r\n') + '\r\n'
+}
 
-import { NextRequest, NextResponse } from "next/server";
 
-type PlanRequest = {
-  origin?: string;
-  destinations?: string[];
-  paxAdults?: number;
-  paxChildren?: number;
-  startDate?: string;
-  endDate?: string;
-  flexibleDays?: number;
-  budgetTotal?: number;
-  currency?: string;
-  transport?: string[];
-};
+// ===== Core =====
+function pickBestTransport(origin: string, dest: string, depart: { y: number; m: number; d: number }, modes: string[]): TransportOption {
+let opts: TransportOption[] = []
+if (modes.includes('flight')) opts = opts.concat(mockFlights(origin, dest, depart))
+if (modes.includes('train')) opts = opts.concat(mockTrains(origin, dest, depart))
+if (modes.includes('drive')) opts = opts.concat(mockDrive(origin, dest, depart))
+return opts.sort((a, b) => scoreTransport(b) - scoreTransport(a))[0]
+}
+function pickBestLodging(city: string, dFrom: { y: number; m: number; d: number }, dTo: { y: number; m: number; d: number }, maxPerNight?: number): LodgingOption {
+return mockLodging(city, dFrom, dTo, maxPerNight).sort((a, b) => scoreLodging(b) - scoreLodging(a))[0]
+}
 
-type ApiLinks = { transport?: string; hotel?: string; itinerary?: string };
-type ApiHotel = { name: string; area?: string };
-type ApiProposal = {
-  destination: string;
-  title: string;
-  nights: number;
-  priceTotal: number;
-  currency: string;
-  transportSummary: string;
-  hotel: ApiHotel;
-  topThings: string[];
-  links: ApiLinks;
-};
 
-export async function POST(req: NextRequest) {
-  const body = (await req.json().catch(() => ({}))) as PlanRequest;
+export async function POST(req: Request) {
+const body = await req.json()
+const origin = String(body.origin || '')
+const dest = String(body.dest || '')
+const dFromISO = String(body.departDate || '')
+const dToISO = String(body.returnDate || '')
+const modes: string[] = Array.isArray(body.modes) ? body.modes : ['flight', 'train', 'drive']
+const maxPerNight = body.maxNight ? Number(body.maxNight) : undefined
+const alarmMin = body.alarmMin ? Number(body.alarmMin) : 45
 
-  const budgetTotal = Math.max(1, Number(body.budgetTotal ?? 1500));
-  const paxAdults = Math.max(1, Number(body.paxAdults ?? 2));
-  const startDate = body.startDate ?? "";
-  const endDate = body.endDate ?? "";
-  const currency = body.currency ?? "EUR";
 
-  const mk = (
-    destination: string,
-    title: string,
-    nights: number,
-    priceTotal: number,
-    transportSummary: string,
-    hotelName: string,
-    hotelArea: string,
-    links: ApiLinks,
-    topThings: string[]
-  ): ApiProposal => ({
-    destination,
-    title,
-    nights,
-    priceTotal,
-    currency,
-    transportSummary,
-    hotel: { name: hotelName, area: hotelArea },
-    topThings,
-    links,
-  });
+if (!origin || !dest || !dFromISO || !dToISO) {
+return NextResponse.json({ error: 'origin, dest, departDate, returnDate sono obbligatori' }, { status: 400 })
+}
+const dFrom = parseISODate(dFromISO)
+const dTo = parseISODate(dToISO)
+if (new Date(`${dToISO}T00:00:00`) <= new Date(`${dFromISO}T00:00:00`)) {
+return NextResponse.json({ error: 'La data di ritorno deve essere dopo la partenza' }, { status: 400 })
+}
 
-  const proposals: ApiProposal[] = [
-    mk(
-      "Valencia, Spagna",
-      "Città, mare e paella · 4 notti",
-      4,
-      Math.round(budgetTotal * 0.65),
-      "✈️ 2h15 da BLQ • bagaglio incluso",
-      "Petit Palace Ruzafa",
-      "Ruzafa/centro",
-      {
-        transport: "https://www.skyscanner.it/",
-        hotel: `https://www.booking.com/searchresults.html?ss=Valencia&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
-        itinerary: "https://goo.gl/maps/",
-      },
-      [
-        "Città vecchia & Lonja",
-        "Città delle Arti",
-        "Malvarrosa",
-        "Mercato Centrale",
-        "Tapas a Ruzafa",
-      ]
-    ),
-    mk(
-      "Lisbona, Portogallo",
-      "Tram, miradouros e pasteis · 5 notti",
-      5,
-      Math.round(budgetTotal * 0.75),
-      "✈️ 3h da BLQ • 1 scalo breve",
-      "My Story Hotel Ouro",
-      "Baixa/Chiado",
-      {
-        transport: "https://www.skyscanner.it/",
-        hotel: `https://www.booking.com/searchresults.html?ss=Lisbona&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
-        itinerary: "https://goo.gl/maps/",
-      },
-      ["Belém", "Alfama & tram 28", "Miradouro", "LX Factory", "Pastéis"]
-    ),
-    mk(
-      "Corsica, Francia",
-      "Strade panoramiche & calette · 6 notti",
-      6,
-      Math.round(budgetTotal * 0.6),
-      "🚗 Da Bologna • traghetto da Livorno",
-      "Les Calanches",
-      "Piana/Porto",
-      {
-        transport: "https://www.directferries.it/",
-        hotel: `https://www.booking.com/searchresults.html?ss=Corsica&checkin=${startDate}&checkout=${endDate}&group_adults=${paxAdults}`,
-        itinerary: "https://goo.gl/maps/",
-      },
-      [
-        "Calanche di Piana",
-        "Riserva di Scandola",
-        "Spiaggia Arone",
-        "Strada D81",
-        "Porto Marina",
-      ]
-    ),
-  ];
 
-  return NextResponse.json({ proposals }, { status: 200 });
+const go = pickBestTransport(origin, dest, dFrom, modes)
+const back = pickBestTransport(dest, origin, dTo, modes)
+const stay = pickBestLodging(dest, dFrom, dTo, maxPerNight)
+
+
+const nights = Math.max(1, Math.round((new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime()) / (1000*60*60*24)))
+const totalStay = Math.round(stay.pricePerNight * nights)
+
+
+const events: EventItem[] = [
+{ title: `Partenza ${origin} → ${dest} (${go.provider})`, start: go.dep, end: go.arr, location: origin, notes: `${go.mode} · €${Math.round(go.price)} · ${go.notes || ''}` },
+{ title: `Check-in ${stay.name}`, start: { ...dFrom, hh: 15, mm: 0 }, end: { ...dFrom, hh: 16, mm: 0 }, location: stay.location, url: stay.url, notes: `€${Math.round(stay.pricePerNight)}/notte · Rating ${stay.rating}/5` },
+{ title: `Check-out ${stay.name}`, start: { ...dTo, hh: 11, mm: 0 }, end: { ...dTo, hh: 11, mm: 30 }, location: stay.location, url: stay.url },
+{ title: `Ritorno ${dest} → ${origin} (${back.provider})`, start: back.dep, end: back.arr, location: dest, notes: `${back.mode} · €${Math.round(back.price)} · ${back.notes || ''}` },
+]
+
+
+const ics = makeICS(`${dest} — viaggio`, events, alarmMin)
+const gcalLinks = events.map(gcalLink)
+
+
+const result = {
+go: { ...go, depText: toDisplay(go.dep), arrText: toDisplay(go.arr) },
+back: { ...back, depText: toDisplay(back.dep), arrText: toDisplay(back.arr) },
+stay,
+nights,
+totalStay,
+events,
+gcalLinks,
+ics, // stringa che il client può scaricare come file
+}
+return NextResponse.json(result)
 }
