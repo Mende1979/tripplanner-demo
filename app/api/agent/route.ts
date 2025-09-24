@@ -8,6 +8,7 @@ export const runtime = 'nodejs';
 type YMD = { y: number; m: number; d: number };
 type HMS = { hh: number; mm: number; ss?: number };
 type Mode = 'flight';
+type Theme = 'mare' | 'montagna' | 'città' | 'natura';
 
 type FlightLeg = {
   mode: Mode;
@@ -230,7 +231,7 @@ function googleLinks(city: string, checkin: string, checkout: string, lat?: numb
   return { hotels, maps };
 }
 
-/** ---------- LLM: sceglie 5 mete mare (JSON via prompt, niente response_format) ---------- */
+/** ---------- LLM: sceglie 5 mete in base al TEMA ---------- */
 type LlmPick = {
   city: string;
   country: string;
@@ -241,8 +242,33 @@ type LlmPick = {
 };
 type LlmOut = { picks: LlmPick[] };
 
+function themeToGuidance(theme: Theme) {
+  switch (theme) {
+    case 'mare':
+      return [
+        'Tema: MARE (spiagge sabbiose/ciottoli, servizi family, acqua adatta ai bambini).',
+        'Evita mete puramente urbane senza mare.',
+      ];
+    case 'montagna':
+      return [
+        'Tema: MONTAGNA (Alpi/Appennini/Carpazi/Pirenei, laghi alpini, trekking family, funivie, parchi).',
+        'Evita isole e mete solo mare.',
+      ];
+    case 'città':
+      return [
+        'Tema: CITTÀ (city-break family-friendly con parchi, musei kids, trasporti comodi).',
+        'Evita piccole località rurali isolate.',
+      ];
+    case 'natura':
+      return [
+        'Tema: NATURA (parchi, coste e aree protette, laghi, colline; focus outdoor family).',
+        'Evita centri urbani affollati se non come hub logistico.',
+      ];
+  }
+}
+
 async function llmPickDestinations(input: {
-  origin: string; month?: string; startDate?: string; nights: number; party: number; budget?: number;
+  origin: string; month?: string; startDate?: string; nights: number; party: number; budget?: number; theme: Theme;
 }) : Promise<LlmPick[]> {
   if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
 
@@ -252,14 +278,14 @@ async function llmPickDestinations(input: {
     `Notti: ${input.nights}`,
     `Persone: ${input.party}`,
     input.budget ? `Budget: €${input.budget}` : 'Budget: non specificato',
-    `Tema: mare, family-friendly, diversificazione geografica, focus Europa/Med; stima alloggio per NOTTE per l’intero gruppo (hotel o appart. medio).`,
   ].join('\n');
 
-  const sys = [
+  const guidance = [
     'Sei un agente viaggi.',
-    'Devi restituire ESATTAMENTE 5 destinazioni di mare adatte a famiglie, diversificate per Paese/area.',
-    'Per ciascuna meta fornisci una motivazione sintetica.',
-    'Stima il costo alloggio per NOTTE per tutto il gruppo (non lusso).',
+    ...themeToGuidance(input.theme),
+    'Diversifica per Paese/area: evita 5 mete nello stesso Paese.',
+    'Per ogni meta indica una motivazione sintetica e una stima del costo alloggio per NOTTE per tutto il gruppo (hotel/appartamento medio).',
+    'Preferisci località con aeroporto collegato (o città-hub prossime alla zona).',
     'Rispondi SOLO con un JSON valido con questo schema:',
     '{ "picks": [ { "city": "...", "country": "...", "reason": "...", "expected_lodging_per_night_eur": 200, "family_score": 0.9, "novelty_score": 0.6 }, ... (totale 5) ] }',
   ].join('\n');
@@ -268,8 +294,8 @@ async function llmPickDestinations(input: {
     model: 'gpt-4o-2024-08-06',
     temperature: 0.2,
     messages: [
-      { role: 'system', content: sys },
-      { role: 'user', content: `Preferenze:\n${prefs}\n\nRestituisci SOLO il JSON richiesto, nessun testo fuori dal JSON.` }
+      { role: 'system', content: guidance },
+      { role: 'user', content: `Preferenze:\n${prefs}\n\nTema selezionato: ${input.theme}\n\nRestituisci SOLO il JSON richiesto, nessun testo fuori dal JSON.` }
     ],
   });
 
@@ -278,21 +304,17 @@ async function llmPickDestinations(input: {
   try {
     parsed = JSON.parse(content) as LlmOut;
   } catch {
-    // fallback minimale: prova a ripulire blocchi "```json"
     const cleaned = content.replace(/```json|```/g, '').trim();
     parsed = JSON.parse(cleaned) as LlmOut;
   }
 
-  // Validazione minima
   if (!parsed || !Array.isArray(parsed.picks)) throw new Error('LLM output malformato');
-  // Prendi esattamente 5
   const picks = parsed.picks.filter(p =>
     p && typeof p.city === 'string' && typeof p.country === 'string' &&
     typeof p.reason === 'string' && Number.isFinite(p.expected_lodging_per_night_eur)
   ).slice(0, 5);
 
   if (picks.length < 1) throw new Error('LLM non ha restituito destinazioni valide');
-  // Se meno di 5, useremo quante ne abbiamo (evito errore duro)
   return picks;
 }
 
@@ -305,6 +327,7 @@ export async function POST(req: Request) {
     const party = Math.max(1, Number(body.party || 4));
     const nights = Math.max(1, Number(body.nights || 14));
     const budget = body.budget ? Number(body.budget) : undefined;
+    const theme = (String(body.theme || 'mare') as Theme);
 
     // Date: month=YYYY-MM o startDate=YYYY-MM-DD
     let startDate = String(body.startDate || '');
@@ -328,8 +351,8 @@ export async function POST(req: Request) {
     }
     const { startISO, endISO } = nightsWindow(startDate, nights);
 
-    // 1) LLM seleziona fino a 5 mete di mare (family)
-    const llmPicks = await llmPickDestinations({ origin: originInput, month: monthStr || undefined, startDate: startDate || undefined, nights, party, budget });
+    // 1) LLM seleziona 5 mete coerenti con il TEMA
+    const llmPicks = await llmPickDestinations({ origin: originInput, month: monthStr || undefined, startDate: startDate || undefined, nights, party, budget, theme });
 
     // 2) Per ciascuna meta: risolvi IATA, voli A/R con Amadeus, stima alloggio + link
     const originIata = await resolveIATA(originInput);
@@ -337,7 +360,8 @@ export async function POST(req: Request) {
 
     const proposals: Proposal[] = [];
     for (const pick of llmPicks) {
-      const destIata = await amadeusCityOrAirportCode(`${pick.city}`);
+      // prova a risolvere la città/hub in IATA
+      const destIata = await amadeusCityOrAirportCode(`${pick.city}`) || await amadeusCityOrAirportCode(`${pick.city} ${pick.country}`);
       if (!destIata) continue;
 
       const [goList, backList] = await Promise.all([
@@ -390,7 +414,7 @@ export async function POST(req: Request) {
     }
 
     if (!proposals.length) {
-      return NextResponse.json({ error: 'Nessuna proposta valida dalle mete LLM (voli non trovati sulle date richieste).' }, { status: 404 });
+      return NextResponse.json({ error: `Nessuna proposta valida trovata per il tema "${theme}" nelle date selezionate (nessun volo A/R trovato). Prova a cambiare date o origine.` }, { status: 404 });
     }
 
     // Ordina: prima entro budget, poi prezzo totale crescente

@@ -33,8 +33,9 @@ export default function Home() {
       const fd = new FormData(e.currentTarget);
       const payload = {
         origin: String(fd.get('origin') || 'Bologna'),
-        month: String(fd.get('month') || ''),       // YYYY-MM
-        startDate: String(fd.get('startDate') || ''), // YYYY-MM-DD
+        theme: String(fd.get('theme') || 'mare'),        // <— NEW
+        month: String(fd.get('month') || ''),            // YYYY-MM
+        startDate: String(fd.get('startDate') || ''),    // YYYY-MM-DD
         nights: Number(fd.get('nights') || 14),
         party: Number(fd.get('party') || 4),
         budget: fd.get('budget') ? Number(fd.get('budget')) : undefined,
@@ -70,19 +71,24 @@ export default function Home() {
 
   return (
     <main style={{ maxWidth: 980, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>TripPlanner — Agent LLM (mare, family)</h1>
-      <p>L’LLM sceglie 5 destinazioni di mare (diversificate), noi verifichiamo i voli e generiamo stima totale + link Google Hotels.</p>
+      <h1>TripPlanner — Agent LLM (temi: mare / montagna / città / natura)</h1>
+      <p>L’LLM sceglie 5 destinazioni coerenti col tema, noi verifichiamo i voli reali (Amadeus) e stimiamo l’alloggio.</p>
 
       <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
           <label> Partenza
             <input name="origin" defaultValue="Bologna" required />
           </label>
+          <label> Tema
+            <select name="theme" defaultValue="mare">
+              <option value="mare">Mare</option>
+              <option value="montagna">Montagna</option>
+              <option value="città">Città</option>
+              <option value="natura">Natura</option>
+            </select>
+          </label>
           <label> Persone
             <input type="number" name="party" defaultValue={4} min={1} />
-          </label>
-          <label> Notti
-            <input type="number" name="nights" defaultValue={14} min={1} />
           </label>
         </div>
 
@@ -93,12 +99,19 @@ export default function Home() {
           <label> Oppure data partenza
             <input type="date" name="startDate" />
           </label>
-          <label> Budget totale (€)
-            <input type="number" name="budget" defaultValue={3000} min={0} />
+          <label> Notti
+            <input type="number" name="nights" defaultValue={14} min={1} />
           </label>
         </div>
 
-        <button type="submit" disabled={loading}>{loading ? 'Genero…' : 'Genera 5 proposte dall’LLM'}</button>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <label> Budget totale (€)
+            <input type="number" name="budget" defaultValue={3000} min={0} />
+          </label>
+          <span />
+        </div>
+
+        <button type="submit" disabled={loading}>{loading ? 'Genero…' : 'Genera 5 proposte'}</button>
       </form>
 
       {!!error && <p style={{ color: 'crimson', marginTop: 12 }}>Errore: {error}</p>}
