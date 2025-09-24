@@ -62,7 +62,6 @@ function isoToParts(iso: string): YMD & HMS {
   };
 }
 function iso8601DurationToMin(s: string): number {
-  // es. "PT2H30M"
   const re = /P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/;
   const m = s.match(re);
   const H = m?.[1] ? parseInt(m[1], 10) : 0;
@@ -73,9 +72,7 @@ function iso8601DurationToMin(s: string): number {
 
 /** ===== Scoring ===== */
 function scoreTransport(opt: TransportOption, w_price = 0.55, w_time = 0.35, w_transfers = 0.10) {
-  const priceCap = 300;
-  const timeCap = 600;
-  const transfersCap = 2;
+  const priceCap = 300, timeCap = 600, transfersCap = 2;
   const sPrice = Math.max(0, 1 - opt.price / priceCap);
   const sTime = Math.max(0, 1 - opt.durationMin / timeCap);
   const sTransfers = Math.max(0, 1 - (opt.transfers ?? 0) / transfersCap);
@@ -95,13 +92,14 @@ function pickBest<T>(arr: T[], score: (x: T) => number): T {
 /** ===== ENV Amadeus ===== */
 const AMADEUS_KEY = process.env.AMADEUS_API_KEY || '';
 const AMADEUS_SECRET = process.env.AMADEUS_API_SECRET || '';
-const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase(); // 'test'|'production'
+const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase(); // 'test' | 'production'
 const AMADEUS_BASE = AMADEUS_ENV === 'production' ? 'https://api.amadeus.com' : 'https://test.api.amadeus.com';
 
 /** ===== Tipi minimi Amadeus (solo campi che usiamo) ===== */
 interface AmadeusLocation {
   subType?: 'CITY' | 'AIRPORT';
   iataCode?: string;
+  geoCode?: { latitude?: number; longitude?: number };
 }
 interface AmadeusLocationsResponse {
   data?: AmadeusLocation[];
@@ -125,102 +123,45 @@ interface AmadeusFlightOffersResponse {
   data?: AmadeusFlightOffer[];
 }
 
-interface AmadeusHotel {
-  name?: string;
-  address?: { cityName?: string };
-  rating?: string;
-  hotelId?: string;
-}
-interface AmadeusHotelOfferPrice {
-  total?: string;
-  base?: string;
-  variations?: { average?: { base?: string; total?: string } };
-}
-interface AmadeusHotelOffer {
-  price?: AmadeusHotelOfferPrice;
-}
-interface AmadeusHotelData {
-  hotel?: AmadeusHotel;
-  offers?: AmadeusHotelOffer[];
-}
-interface AmadeusHotelOffersResponse {
-  data?: AmadeusHotelData[];
-}
-
 /** ===== OAuth Amadeus (cache in memoria) ===== */
 let amadeusToken: { token: string; exp: number } | null = null;
 
 async function getAmadeusToken(): Promise<string> {
+  if (!AMADEUS_KEY || !AMADEUS_SECRET) {
+    throw new Error('Missing AMADEUS_API_KEY or AMADEUS_API_SECRET');
+  }
   const now = Math.floor(Date.now() / 1000);
   if (amadeusToken && amadeusToken.exp - 30 > now) return amadeusToken.token;
+
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: AMADEUS_KEY,
+    client_secret: AMADEUS_SECRET,
+  });
 
   const res = await fetch(`${AMADEUS_BASE}/v1/security/oauth2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: AMADEUS_KEY,
-      client_secret: AMADEUS_SECRET,
-    }),
+    body,
     cache: 'no-store',
   });
 
-  if (!res.ok) throw new Error('Amadeus OAuth failed');
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    console.error('Amadeus OAuth error:', res.status, txt);
+    throw new Error(`Amadeus OAuth failed (${res.status})`);
+  }
+
   const j = (await res.json()) as { access_token: string; expires_in: number };
   amadeusToken = { token: j.access_token, exp: now + j.expires_in };
   return amadeusToken.token;
 }
 
-/** ===== Alias IT→IATA e IT→EN per città comuni + risoluzione IATA ===== */
-const IATA_BY_ALIAS: Record<string, string> = {
-  // Italia
-  'bologna': 'BLQ', 'roma': 'ROM', 'milano': 'MIL', 'napoli': 'NAP', 'torino': 'TRN', 'venezia': 'VCE',
-  'firenze': 'FLR', 'pisa': 'PSA', 'verona': 'VRN', 'bari': 'BRI', 'catania': 'CTA', 'palermo': 'PMO',
-  // Europa + popolari
-  'lisbona': 'LIS', 'parigi': 'PAR', 'londra': 'LON', 'barcellona': 'BCN', 'madrid': 'MAD',
-  'berlino': 'BER', 'amsterdam': 'AMS', 'bruxelles': 'BRU', 'vienna': 'VIE', 'praga': 'PRG',
-  'budapest': 'BUD', 'zurigo': 'ZRH', 'ginevra': 'GVA', 'dublino': 'DUB', 'copenaghen': 'CPH',
-  // extra comuni
-  'new york': 'NYC', 'los angeles': 'LAX', 'dubai': 'DXB', 'istanbul': 'IST', 'atene': 'ATH',
-};
-
-const EN_BY_ALIAS: Record<string, string> = {
-  'lisbona': 'Lisbon', 'roma': 'Rome', 'milano': 'Milan', 'napoli': 'Naples', 'torino': 'Turin',
-  'venezia': 'Venice', 'firenze': 'Florence', 'monaco di baviera': 'Munich', 'londra': 'London',
-  'parigi': 'Paris', 'praga': 'Prague', 'copenaghen': 'Copenhagen', 'bruxelles': 'Brussels',
-  'berlino': 'Berlin', 'amsterdam': 'Amsterdam', 'barcellona': 'Barcelona', 'vienna': 'Vienna',
-  'ginevra': 'Geneva', 'zurigo': 'Zurich', 'atene': 'Athens', 'new york': 'New York',
-};
-
-/** Risolvi: IATA diretto → alias IATA → keyword IT → keyword EN (fallback) */
-async function resolveIata(cityOrCode: string): Promise<string | null> {
-  const raw = cityOrCode.trim();
-  // se già codice IATA a 3 lettere
-  if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase();
-
-  const k = raw.toLowerCase();
-  // alias italiani direttamente a IATA
-  if (IATA_BY_ALIAS[k]) return IATA_BY_ALIAS[k];
-
-  // prova con Amadeus usando il testo così com'è (IT)
-  let code = await amadeusCityOrAirportCode(raw);
-  if (code) return code;
-
-  // prova traduzione inglese se disponibile
-  const en = EN_BY_ALIAS[k];
-  if (en) {
-    code = await amadeusCityOrAirportCode(en);
-    if (code) return code;
-  }
-  return null;
-}
-
-
-/** ===== City/Airport code ===== */
-async function amadeusCityOrAirportCode(q: string): Promise<string | null> {
+/** ===== Airport & City Search (IATA + geocode) ===== */
+async function amadeusCityOrAirportCode(keyword: string): Promise<string | null> {
   const token = await getAmadeusToken();
   const url = new URL(`${AMADEUS_BASE}/v1/reference-data/locations`);
-  url.searchParams.set('keyword', q);
+  url.searchParams.set('keyword', keyword);
   url.searchParams.set('subType', 'CITY,AIRPORT');
   url.searchParams.set('view', 'LIGHT');
 
@@ -233,13 +174,71 @@ async function amadeusCityOrAirportCode(q: string): Promise<string | null> {
   return city || apt || null;
 }
 
-/** ===== Flight offers ===== */
-async function amadeusFlights(originCity: string, destCity: string, departISO: string): Promise<TransportOption[]> {
+interface CityGeo { lat: number; lon: number }
+async function amadeusCityGeo(keyword: string): Promise<CityGeo | null> {
   const token = await getAmadeusToken();
-  const oCode = await amadeusCityOrAirportCode(originCity);
-  const dCode = await amadeusCityOrAirportCode(destCity);
+  const url = new URL(`${AMADEUS_BASE}/v1/reference-data/locations`);
+  url.searchParams.set('keyword', keyword);
+  url.searchParams.set('subType', 'CITY,AIRPORT');
+  url.searchParams.set('view', 'LIGHT');
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+  if (!res.ok) return null;
+  const j = (await res.json()) as AmadeusLocationsResponse;
+  const list = Array.isArray(j.data) ? j.data : [];
+
+  const pick =
+    list.find((x) => x.subType === 'CITY' && x.geoCode?.latitude && x.geoCode?.longitude) ??
+    list.find((x) => x.subType === 'AIRPORT' && x.geoCode?.latitude && x.geoCode?.longitude);
+
+  if (!pick?.geoCode) return null;
+  return { lat: pick.geoCode.latitude!, lon: pick.geoCode.longitude! };
+}
+
+/** ===== Alias IT→IATA e IT→EN + risoluzione IATA ===== */
+const IATA_BY_ALIAS: Record<string, string> = {
+  // Italia
+  bologna: 'BLQ', roma: 'ROM', milano: 'MIL', napoli: 'NAP', torino: 'TRN', venezia: 'VCE',
+  firenze: 'FLR', pisa: 'PSA', verona: 'VRN', bari: 'BRI', catania: 'CTA', palermo: 'PMO',
+  // Europa + popolari
+  lisbona: 'LIS', parigi: 'PAR', londra: 'LON', barcellona: 'BCN', madrid: 'MAD',
+  berlino: 'BER', amsterdam: 'AMS', bruxelles: 'BRU', vienna: 'VIE', praga: 'PRG',
+  budapest: 'BUD', zurigo: 'ZRH', ginevra: 'GVA', dublino: 'DUB', copenaghen: 'CPH',
+  // extra comuni
+  'new york': 'NYC', 'los angeles': 'LAX', dubai: 'DXB', istanbul: 'IST', atene: 'ATH',
+};
+const EN_BY_ALIAS: Record<string, string> = {
+  lisbona: 'Lisbon', roma: 'Rome', milano: 'Milan', napoli: 'Naples', torino: 'Turin',
+  venezia: 'Venice', firenze: 'Florence', 'monaco di baviera': 'Munich', londra: 'London',
+  parigi: 'Paris', praga: 'Prague', copenaghen: 'Copenhagen', bruxelles: 'Brussels',
+  berlino: 'Berlin', amsterdam: 'Amsterdam', barcellona: 'Barcelona', vienna: 'Vienna',
+  ginevra: 'Geneva', zurigo: 'Zurich', atene: 'Athens', 'new york': 'New York',
+};
+
+async function resolveIata(cityOrCode: string): Promise<string | null> {
+  const raw = cityOrCode.trim();
+  if (/^[A-Za-z]{3}$/.test(raw)) return raw.toUpperCase(); // già IATA
+  const k = raw.toLowerCase();
+  if (IATA_BY_ALIAS[k]) return IATA_BY_ALIAS[k];
+
+  let code = await amadeusCityOrAirportCode(raw);
+  if (code) return code;
+
+  const en = EN_BY_ALIAS[k];
+  if (en) {
+    code = await amadeusCityOrAirportCode(en);
+    if (code) return code;
+  }
+  return null;
+}
+
+/** ===== Flight offers (Amadeus) ===== */
+async function amadeusFlights(originCity: string, destCity: string, departISO: string): Promise<TransportOption[]> {
+  const oCode = await resolveIata(originCity);
+  const dCode = await resolveIata(destCity);
   if (!oCode || !dCode) throw new Error('IATA code not found');
 
+  const token = await getAmadeusToken();
   const url = new URL(`${AMADEUS_BASE}/v2/shopping/flight-offers`);
   url.searchParams.set('originLocationCode', oCode);
   url.searchParams.set('destinationLocationCode', dCode);
@@ -263,7 +262,6 @@ async function amadeusFlights(originCity: string, destCity: string, departISO: s
     const durMin = itin.duration ? iso8601DurationToMin(itin.duration) : undefined;
     const priceStr = f.price?.grandTotal ?? f.price?.total;
     const price = priceStr ? Number(priceStr) : NaN;
-
     if (!depISO || !arrISO || !durMin || !Number.isFinite(price)) continue;
 
     out.push({
@@ -277,58 +275,68 @@ async function amadeusFlights(originCity: string, destCity: string, departISO: s
       notes: ((itin.segments?.length ?? 1) === 1 ? 'Diretto' : `${(itin.segments?.length ?? 1) - 1} scalo/i`) + ' · via Amadeus',
     });
   }
-
   if (!out.length) throw new Error('No flights found');
   out.sort((a, b) => scoreTransport(b) - scoreTransport(a));
   return out;
 }
 
-/** ===== Hotel offers (Hotel List + Hotel Search v3) ===== */
-interface HotelListByCityItem {
-  hotelId?: string;
-  name?: string;
-  address?: { cityName?: string };
-  geoCode?: { latitude?: number; longitude?: number };
+/** ===== Hotel offers (Hotel List by city/geocode + Hotel Search v3) ===== */
+interface HotelListByCityResp { data?: { hotelId?: string }[] }
+interface HotelListByGeoResp { data?: { hotelId?: string }[] }
+interface HotelOffersV3Resp {
+  data?: {
+    hotel?: { hotelId?: string; name?: string; address?: { cityName?: string } };
+    offers?: { price?: { total?: string } }[];
+  }[];
 }
-interface HotelListByCityResponse {
-  data?: HotelListByCityItem[];
-}
-
-interface HotelOffersV3Price { total?: string; currency?: string }
-interface HotelOffersV3Hotel { hotelId?: string; name?: string; address?: { cityName?: string } }
-interface HotelOffersV3Item { hotel?: HotelOffersV3Hotel; offers?: { price?: HotelOffersV3Price }[] }
-interface HotelOffersV3Response { data?: HotelOffersV3Item[] }
 
 async function amadeusHotels(city: string, dFromISO: string, dToISO: string, maxPerNight?: number): Promise<LodgingOption[]> {
   const token = await getAmadeusToken();
   const cityCode = await resolveIata(city);
-  if (!cityCode) throw new Error('City/IATA not found for hotels');
 
-  // 1) Lista hotel per città (Hotel List API)
-  const listUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city`);
-  listUrl.searchParams.set('cityCode', cityCode);
-  listUrl.searchParams.set('radius', '20');           // allarga un po’ il raggio
-  listUrl.searchParams.set('radiusUnit', 'KM');
-  listUrl.searchParams.set('hotelSource', 'ALL');     // più copertura in sandbox
+  // 1) Hotel List by City
+  let hotelIds: string[] = [];
+  if (cityCode) {
+    const listUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-city`);
+    listUrl.searchParams.set('cityCode', cityCode);
+    listUrl.searchParams.set('radius', '25');
+    listUrl.searchParams.set('radiusUnit', 'KM');
+    listUrl.searchParams.set('hotelSource', 'ALL');
+    const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+    if (listRes.ok) {
+      const listJson = (await listRes.json()) as HotelListByCityResp;
+      hotelIds = (listJson.data ?? [])
+        .map(h => h.hotelId)
+        .filter((x): x is string => typeof x === 'string' && x.length > 0);
+    }
+  }
 
-  const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-  if (!listRes.ok) throw new Error('Hotel list failed');
-  const listJson = (await listRes.json()) as HotelListByCityResponse;
+  // 2) Fallback: Hotel List by Geocode
+  if (hotelIds.length === 0) {
+    const geo = await amadeusCityGeo(city);
+    if (!geo) throw new Error('No hotels found for city (no geocode)');
+    const geoUrl = new URL(`${AMADEUS_BASE}/v1/reference-data/locations/hotels/by-geocode`);
+    geoUrl.searchParams.set('latitude', String(geo.lat));
+    geoUrl.searchParams.set('longitude', String(geo.lon));
+    geoUrl.searchParams.set('radius', '25');
+    geoUrl.searchParams.set('radiusUnit', 'KM');
+    geoUrl.searchParams.set('hotelSource', 'ALL');
+    const geoRes = await fetch(geoUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+    if (!geoRes.ok) throw new Error('Hotel list by geocode failed');
+    const geoJson = (await geoRes.json()) as HotelListByGeoResp;
+    hotelIds = (geoJson.data ?? [])
+      .map(h => h.hotelId)
+      .filter((x): x is string => typeof x === 'string' && x.length > 0);
+  }
 
-  const ids = (listJson.data ?? [])
-    .map(h => h.hotelId)
-    .filter((x): x is string => typeof x === 'string' && x.length > 0)
-    .slice(0, 20); // limitiamo
+  if (hotelIds.length === 0) throw new Error('No hotels found for city (test dataset may be limited)');
 
-  if (!ids.length) throw new Error('No hotels found for city (test dataset may be limited)');
-
-  // 2) Offerte per quegli hotel (Hotel Search v3)
+  // 3) Hotel Search v3 (offers)
   const nights = Math.max(1, Math.round(
     (new Date(`${dToISO}T00:00:00`).getTime() - new Date(`${dFromISO}T00:00:00`).getTime()) / 86_400_000
   ));
-
   const offersUrl = new URL(`${AMADEUS_BASE}/v3/shopping/hotel-offers`);
-  offersUrl.searchParams.set('hotelIds', ids.join(','));
+  offersUrl.searchParams.set('hotelIds', hotelIds.slice(0, 30).join(','));
   offersUrl.searchParams.set('adults', '2');
   offersUrl.searchParams.set('checkInDate', dFromISO);
   offersUrl.searchParams.set('checkOutDate', dToISO);
@@ -336,7 +344,7 @@ async function amadeusHotels(city: string, dFromISO: string, dToISO: string, max
 
   const offersRes = await fetch(offersUrl, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
   if (!offersRes.ok) throw new Error('Hotel search failed');
-  const offersJson = (await offersRes.json()) as HotelOffersV3Response;
+  const offersJson = (await offersRes.json()) as HotelOffersV3Resp;
 
   const out: LodgingOption[] = [];
   for (const item of offersJson.data ?? []) {
@@ -344,25 +352,22 @@ async function amadeusHotels(city: string, dFromISO: string, dToISO: string, max
     const offers = item.offers ?? [];
     if (!hotel || offers.length === 0) continue;
 
-    // prendi l’offerta più economica e calcola €/notte
     const totals = offers
       .map(o => o.price?.total)
       .filter((t): t is string => typeof t === 'string' && t.length > 0)
       .map(t => Number(t))
       .filter(n => Number.isFinite(n));
-    if (totals.length === 0) continue;
 
-    const minTotal = Math.min(...totals);
-    const perNight = Math.max(1, Math.round(minTotal / nights));
-
+    if (!totals.length) continue;
+    const perNight = Math.max(1, Math.round(Math.min(...totals) / nights));
     if (maxPerNight !== undefined && perNight > maxPerNight) continue;
 
     out.push({
       name: hotel.name || 'Hotel',
       location: hotel.address?.cityName || city,
       pricePerNight: perNight,
-      rating: 4.2,                 // sandbox spesso non fornisce rating reali
-      reviews: 0,                  // idem
+      rating: 4.2, // sandbox spesso non fornisce rating reali
+      reviews: 0,
       url: hotel.hotelId
         ? `https://www.google.com/search?q=${encodeURIComponent((hotel.name || 'hotel') + ' ' + (hotel.address?.cityName || city))}`
         : undefined,
@@ -370,10 +375,9 @@ async function amadeusHotels(city: string, dFromISO: string, dToISO: string, max
   }
 
   if (!out.length) throw new Error('No hotels found (try different dates/city in sandbox)');
-  out.sort((a, b) => scoreLodging(b) - scoreLodging(a));
+  out.sort((a, b) => (b.rating - a.rating) || (a.pricePerNight - b.pricePerNight));
   return out;
 }
-
 
 /** ===== GCal & ICS ===== */
 const TZID = 'Europe/Rome';
@@ -437,19 +441,13 @@ async function pickBestLodging(city: string, dFromISO: string, dToISO: string, m
 /** ===== Handler ===== */
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const origin = String((body as Record<string, unknown>).origin || '');
-    const dest = String((body as Record<string, unknown>).dest || '');
-    const dFromISO = String((body as Record<string, unknown>).departDate || '');
-    const dToISO = String((body as Record<string, unknown>).returnDate || '');
-    const maxPerNight =
-      (body as Record<string, unknown>).maxNight !== undefined
-        ? Number((body as Record<string, unknown>).maxNight)
-        : undefined;
-    const alarmMin =
-      (body as Record<string, unknown>).alarmMin !== undefined
-        ? Number((body as Record<string, unknown>).alarmMin)
-        : 45;
+    const body = (await req.json()) as Record<string, unknown>;
+    const origin = String(body.origin || '');
+    const dest = String(body.dest || '');
+    const dFromISO = String(body.departDate || '');
+    const dToISO = String(body.returnDate || '');
+    const maxPerNight = body.maxNight !== undefined ? Number(body.maxNight) : undefined;
+    const alarmMin = body.alarmMin !== undefined ? Number(body.alarmMin) : 45;
 
     if (!origin || !dest || !dFromISO || !dToISO) {
       return NextResponse.json({ error: 'origin, dest, departDate, returnDate sono obbligatori' }, { status: 400 });
@@ -514,4 +512,19 @@ export async function POST(req: Request) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+}
+
+/** ===== Diagnostica rapida: GET /api/plan?diag=1 ===== */
+export async function GET(req: Request) {
+  const u = new URL(req.url);
+  if (u.searchParams.get('diag') === '1') {
+    return NextResponse.json({
+      hasKey: !!process.env.AMADEUS_API_KEY,
+      hasSecret: !!process.env.AMADEUS_API_SECRET,
+      env: process.env.AMADEUS_ENV || 'test',
+      base: AMADEUS_BASE,
+      runtime,
+    });
+  }
+  return NextResponse.json({ ok: true });
 }
