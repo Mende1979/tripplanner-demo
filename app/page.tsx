@@ -1,10 +1,33 @@
 'use client';
 import React, { useState } from 'react';
 
+// Tipi coerenti con la risposta di /api/plan
+type TransportMode = 'flight' | 'train' | 'drive';
+
+type TransportOut = {
+  mode: TransportMode;
+  provider: string;
+  depText: string;   // es. "18/10/2025 08:00"
+  arrText: string;   // es. "18/10/2025 10:25"
+  durationMin: number;
+  transfers?: number;
+  price: number;
+  notes?: string;
+};
+
+type LodgingOut = {
+  name: string;
+  location: string;
+  pricePerNight: number;
+  rating: number;
+  reviews: number;
+  url?: string;
+};
+
 type ApiResult = {
-  go: any;
-  back: any;
-  stay: any;
+  go: TransportOut;
+  back: TransportOut;
+  stay: LodgingOut;
   nights: number;
   totalStay: number;
   gcalLinks: string[];
@@ -12,7 +35,7 @@ type ApiResult = {
 };
 
 export default function Home() {
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const [res, setRes] = useState<ApiResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,15 +47,15 @@ export default function Home() {
 
     try {
       const fd = new FormData(e.currentTarget);
-      const modes = fd.getAll('modes') as string[];
+      const modes = fd.getAll('modes').map(String); // string[]
       const payload = {
-        origin: fd.get('origin'),
-        dest: fd.get('dest'),
-        departDate: fd.get('departDate'),
-        returnDate: fd.get('returnDate'),
+        origin: String(fd.get('origin') || ''),
+        dest: String(fd.get('dest') || ''),
+        departDate: String(fd.get('departDate') || ''),
+        returnDate: String(fd.get('returnDate') || ''),
         modes,
-        maxNight: fd.get('maxNight'),
-        alarmMin: fd.get('alarmMin'),
+        maxNight: fd.get('maxNight') ? Number(fd.get('maxNight')) : undefined,
+        alarmMin: fd.get('alarmMin') ? Number(fd.get('alarmMin')) : undefined,
       };
 
       const r = await fetch('/api/plan', {
@@ -42,15 +65,22 @@ export default function Home() {
       });
 
       if (!r.ok) {
-        const j = await r.json().catch(() => ({} as any));
-        setError((j as any)?.error || 'Errore imprevisto');
+        let msg = 'Errore imprevisto';
+        try {
+          const j: { error?: string } = await r.json();
+          if (j?.error) msg = j.error;
+        } catch {
+          // ignore parse error
+        }
+        setError(msg);
         return;
       }
 
-      const j = (await r.json()) as ApiResult;
+      const j: ApiResult = await r.json();
       setRes(j);
-    } catch (err: any) {
-      setError(String(err?.message || err));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -124,12 +154,12 @@ export default function Home() {
 
           <h3>Trasporti</h3>
           <p>
-            <b>Andata</b>: {res.go.mode?.toUpperCase()} {res.go.provider} · {res.go.depText} → {res.go.arrText} · {res.go.durationMin} min ·{' '}
-            {res.go.transfers || 0} transiti · €{Math.round(res.go.price)} · {res.go.notes || ''}
+            <b>Andata</b>: {res.go.mode.toUpperCase()} {res.go.provider} · {res.go.depText} → {res.go.arrText} · {res.go.durationMin} min ·{' '}
+            {(res.go.transfers ?? 0)} transiti · €{Math.round(res.go.price)} · {res.go.notes ?? ''}
           </p>
           <p>
-            <b>Ritorno</b>: {res.back.mode?.toUpperCase()} {res.back.provider} · {res.back.depText} → {res.back.arrText} · {res.back.durationMin} min ·{' '}
-            {res.back.transfers || 0} transiti · €{Math.round(res.back.price)} · {res.back.notes || ''}
+            <b>Ritorno</b>: {res.back.mode.toUpperCase()} {res.back.provider} · {res.back.depText} → {res.back.arrText} · {res.back.durationMin} min ·{' '}
+            {(res.back.transfers ?? 0)} transiti · €{Math.round(res.back.price)} · {res.back.notes ?? ''}
           </p>
 
           <h3>Sistemazione</h3>
@@ -150,7 +180,7 @@ export default function Home() {
 
           <h3>Aggiungi i singoli eventi su Google Calendar</h3>
           <ol>
-            {res.gcalLinks.map((u, i) => (
+            {res.gcalLinks.map((u: string, i: number) => (
               <li key={i}><a href={u} target="_blank" rel="noopener">Aggiungi evento {i + 1}</a></li>
             ))}
           </ol>
