@@ -1,15 +1,24 @@
 'use client';
 import React, { useState } from 'react';
 
-type ApiResult = {
-  go: any;
-  back: any;
-  stay: any;
-  nights: number;
-  totalStay: number;
+type Proposal = {
+  id: string;
+  destination: { city: string; country?: string; iataCity: string; reason: string };
+  dates: { depart: string; return: string; nights: number };
+  party: number;
+  flight: {
+    go: { provider: string; durationMin: number; transfers: number; price: number };
+    back:{ provider: string; durationMin: number; transfers: number; price: number };
+    total: number;
+  };
+  lodging: { nights: number; estPerNight: number; estTotal: number; googleHotelsUrl: string; googleMapsUrl: string };
+  totalEstimate: number;
+  underBudget: boolean;
+  budget?: number;
   gcalLinks: string[];
   ics: string;
 };
+type ApiResult = { proposals: Proposal[] };
 
 export default function Home() {
   const [loading, setLoading] = useState(false);
@@ -18,142 +27,116 @@ export default function Home() {
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setRes(null);
+    setLoading(true); setError(null); setRes(null);
 
     try {
       const fd = new FormData(e.currentTarget);
-      const modes = fd.getAll('modes') as string[];
       const payload = {
-        origin: fd.get('origin'),
-        dest: fd.get('dest'),
-        departDate: fd.get('departDate'),
-        returnDate: fd.get('returnDate'),
-        modes,
-        maxNight: fd.get('maxNight'),
-        alarmMin: fd.get('alarmMin'),
+        origin: String(fd.get('origin') || 'Bologna'),
+        month: String(fd.get('month') || ''),       // YYYY-MM
+        startDate: String(fd.get('startDate') || ''), // YYYY-MM-DD
+        nights: Number(fd.get('nights') || 14),
+        party: Number(fd.get('party') || 4),
+        budget: fd.get('budget') ? Number(fd.get('budget')) : undefined,
       };
 
-      const r = await fetch('/api/plan', {
+      const r = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
       if (!r.ok) {
-        const j = await r.json().catch(() => ({} as any));
-        setError((j as any)?.error || 'Errore imprevisto');
+        const j = await r.json().catch(() => ({} as { error?: string }));
+        setError(j?.error || 'Errore imprevisto');
         return;
       }
-
       const j = (await r.json()) as ApiResult;
       setRes(j);
-    } catch (err: any) {
-      setError(String(err?.message || err));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
     } finally {
       setLoading(false);
     }
   }
 
-  function downloadICS() {
-    if (!res) return;
-    const blob = new Blob([res.ics], { type: 'text/calendar;charset=utf-8' });
+  function downloadICS(p: Proposal) {
+    const blob = new Blob([p.ics], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'tripplanner.ics';
-    a.click();
+    a.href = url; a.download = `trip-${p.destination.iataCity}.ics`; a.click();
     URL.revokeObjectURL(url);
   }
 
   return (
-    <main style={{ maxWidth: 800, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>TripPlanner — Transport + Lodging</h1>
-      <p>Trova il miglior trasporto (tempo/costo) e una sistemazione ben recensita entro budget.</p>
+    <main style={{ maxWidth: 980, margin: '40px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
+      <h1>TripPlanner — Agent LLM (mare, family)</h1>
+      <p>L’LLM sceglie 5 destinazioni di mare (diversificate), noi verifichiamo i voli e generiamo stima totale + link Google Hotels.</p>
 
       <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, marginTop: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <label>
-            Partenza
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+          <label> Partenza
             <input name="origin" defaultValue="Bologna" required />
           </label>
-          <label>
-            Destinazione
-            <input name="dest" defaultValue="Lisbona" required />
+          <label> Persone
+            <input type="number" name="party" defaultValue={4} min={1} />
+          </label>
+          <label> Notti
+            <input type="number" name="nights" defaultValue={14} min={1} />
           </label>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <label>
-            Data partenza
-            <input type="date" name="departDate" defaultValue="2025-10-18" required />
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+          <label> Mese (YYYY-MM)
+            <input name="month" placeholder="2025-08" />
           </label>
-          <label>
-            Data ritorno
-            <input type="date" name="returnDate" defaultValue="2025-10-21" required />
+          <label> Oppure data partenza
+            <input type="date" name="startDate" />
           </label>
-        </div>
-
-        <fieldset>
-          <legend>Mezzi consentiti</legend>
-          <label><input type="checkbox" name="modes" value="flight" defaultChecked /> Volo</label>{' '}
-          <label><input type="checkbox" name="modes" value="train" defaultChecked /> Treno</label>{' '}
-          <label><input type="checkbox" name="modes" value="drive" defaultChecked /> Auto</label>
-        </fieldset>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <label>
-            Budget/notte (€)
-            <input type="number" name="maxNight" defaultValue={100} min={0} />
-          </label>
-          <label>
-            Promemoria (min)
-            <input type="number" name="alarmMin" defaultValue={45} min={0} />
+          <label> Budget totale (€)
+            <input type="number" name="budget" defaultValue={3000} min={0} />
           </label>
         </div>
 
-        <button type="submit" disabled={loading}>{loading ? 'Cerco…' : 'Cerca soluzioni'}</button>
+        <button type="submit" disabled={loading}>{loading ? 'Genero…' : 'Genera 5 proposte dall’LLM'}</button>
       </form>
 
-      {!!error && <p style={{ color: 'crimson' }}>Errore: {error}</p>}
+      {!!error && <p style={{ color: 'crimson', marginTop: 12 }}>Errore: {error}</p>}
 
-      {res && (
-        <section style={{ marginTop: 24 }}>
-          <h2>Risultati</h2>
-
-          <h3>Trasporti</h3>
-          <p>
-            <b>Andata</b>: {res.go.mode?.toUpperCase()} {res.go.provider} · {res.go.depText} → {res.go.arrText} · {res.go.durationMin} min ·{' '}
-            {res.go.transfers || 0} transiti · €{Math.round(res.go.price)} · {res.go.notes || ''}
-          </p>
-          <p>
-            <b>Ritorno</b>: {res.back.mode?.toUpperCase()} {res.back.provider} · {res.back.depText} → {res.back.arrText} · {res.back.durationMin} min ·{' '}
-            {res.back.transfers || 0} transiti · €{Math.round(res.back.price)} · {res.back.notes || ''}
-          </p>
-
-          <h3>Sistemazione</h3>
-          <p>
-            <b>{res.stay.name}</b> ({res.stay.location}) — Rating {res.stay.rating}/5 ({res.stay.reviews} recensioni)
-            <br />
-            €{Math.round(res.stay.pricePerNight)}/notte × {res.nights} = <b>€{res.totalStay}</b>
-          </p>
-          {res.stay.url && (
-            <p>
-              <a href={res.stay.url} target="_blank" rel="noopener">Apri link struttura</a>
-            </p>
-          )}
-
-          <p>
-            <button onClick={downloadICS}>⬇️ Scarica calendario (.ics)</button>
-          </p>
-
-          <h3>Aggiungi i singoli eventi su Google Calendar</h3>
-          <ol>
-            {res.gcalLinks.map((u, i) => (
-              <li key={i}><a href={u} target="_blank" rel="noopener">Aggiungi evento {i + 1}</a></li>
-            ))}
-          </ol>
+      {res?.proposals && (
+        <section style={{ marginTop: 24, display:'grid', gap:16 }}>
+          {res.proposals.map((p) => (
+            <article key={p.id} style={{ border:'1px solid #ddd', borderRadius:12, padding:16 }}>
+              <h3 style={{ marginTop: 0 }}>
+                {p.destination.city} ({p.destination.iataCity}) {p.underBudget ? '· ✅ entro budget' : '· ⚠️ sopra budget'}
+              </h3>
+              <p style={{ margin:'6px 0' }}>
+                <b>Motivo</b>: {p.destination.reason}
+              </p>
+              <p style={{ margin:'6px 0' }}>
+                <b>Date</b>: {p.dates.depart} → {p.dates.return} · {p.dates.nights} notti · <b>Persone</b>: {p.party}
+              </p>
+              <p style={{ margin:'6px 0' }}>
+                <b>Voli</b>: Andata {p.flight.go.provider} · {p.flight.go.durationMin} min · {p.flight.go.transfers} scali · €{Math.round(p.flight.go.price)}<br/>
+                Ritorno {p.flight.back.provider} · {p.flight.back.durationMin} min · {p.flight.back.transfers} scali · €{Math.round(p.flight.back.price)}<br/>
+                <b>Totale voli</b>: €{Math.round(p.flight.total)}
+              </p>
+              <p style={{ margin:'6px 0' }}>
+                <b>Alloggio</b>: stima €{p.lodging.estPerNight}/notte × {p.lodging.nights} = <b>€{p.lodging.estTotal}</b><br/>
+                <a href={p.lodging.googleHotelsUrl} target="_blank" rel="noopener">Apri Google Hotels (date)</a> ·{' '}
+                <a href={p.lodging.googleMapsUrl} target="_blank" rel="noopener">Apri su Maps</a>
+              </p>
+              <p style={{ margin:'6px 0' }}>
+                <b>Totale stimato</b>: €{Math.round(p.totalEstimate)} {p.budget ? `(budget €${p.budget})` : ''}
+              </p>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+                <button onClick={() => downloadICS(p)}>⬇️ Scarica .ics</button>
+                {p.gcalLinks.map((u, i) => (
+                  <a key={i} href={u} target="_blank" rel="noopener">Aggiungi evento {i+1}</a>
+                ))}
+              </div>
+            </article>
+          ))}
         </section>
       )}
     </main>
