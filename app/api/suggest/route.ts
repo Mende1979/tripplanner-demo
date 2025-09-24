@@ -180,26 +180,84 @@ async function resolveIATA(cityOrCode: string): Promise<string | null> {
   return code || null;
 }
 
-/** Flight Inspiration (mete dinamiche) */
+/** ========== Inspiration (robusta con fallback) ========== */
 interface AInspItem { destination?: string; departureDate?: string; returnDate?: string; price?: { total?: string; currency?: string } }
 interface AInspResp { data?: AInspItem[] }
 
-async function inspiration(originIata: string, departISO: string, nights: number, maxFlightPrice?: number): Promise<AInspItem[]> {
+async function inspirationQuery(params: {
+  origin: string;
+  departureExact?: string;             // 'YYYY-MM-DD'
+  departureRange?: { from: string; to: string }; // 'YYYY-MM-DD','YYYY-MM-DD'
+  durationRange?: { min: number; max: number };  // optional (spesso fragile in sandbox)
+  maxPrice?: number;
+}): Promise<{ ok: boolean; data: AInspItem[]; status?: number; detail?: string }> {
   const token = await getAmadeusToken();
   const url = new URL(`${AMADEUS_BASE}/v1/shopping/flight-destinations`);
-  url.searchParams.set('origin', originIata);
-  url.searchParams.set('departureDate', departISO);
+  url.searchParams.set('origin', params.origin);
   url.searchParams.set('oneWay', 'false');
   url.searchParams.set('currencyCode', 'EUR');
-  url.searchParams.set('duration', String(nights));            // è supportato dall’API
-  if (maxFlightPrice !== undefined) url.searchParams.set('maxPrice', String(Math.max(1, Math.floor(maxFlightPrice))));
+
+  if (params.departureExact) {
+    url.searchParams.set('departureDate', params.departureExact);
+  } else if (params.departureRange) {
+    url.searchParams.set('departureDate', `${params.departureRange.from},${params.departureRange.to}`);
+  }
+  if (params.durationRange) {
+    // In alcuni ambienti il parametro è instabile: usiamo "min,max" come stringa
+    const min = Math.max(1, Math.floor(params.durationRange.min));
+    const max = Math.max(min, Math.floor(params.durationRange.max));
+    url.searchParams.set('duration', `${min},${max}`);
+  }
+  if (typeof params.maxPrice === 'number') {
+    url.searchParams.set('maxPrice', String(Math.max(1, Math.floor(params.maxPrice))));
+  }
+
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-  if (!res.ok) throw new Error('Inspiration search failed');
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    return { ok: false, data: [], status: res.status, detail };
+  }
   const j = (await res.json()) as AInspResp;
-  return (j.data ?? []).filter(x => typeof x.destination === 'string');
+  return { ok: true, data: (j.data ?? []).filter(x => typeof x.destination === 'string') };
 }
 
-/** Flight Offers (dettaglio voli A/R) */
+async function inspiration(originIata: string, departISO: string, nights: number, budget?: number): Promise<AInspItem[]> {
+  const attempts: Array<() => Promise<{ ok: boolean; data: AInspItem[] }>> = [];
+
+  // A) data esatta + duration range stretta (n-1,n+1)
+  attempts.push(() => inspirationQuery({
+    origin: originIata,
+    departureExact: departISO,
+    durationRange: { min: Math.max(1, nights - 1), max: nights + 1 },
+    maxPrice: budget ? Math.floor(budget * 0.45) : undefined,
+  }));
+
+  // B) range di 7 giorni dalla data (senza duration)
+  attempts.push(() => inspirationQuery({
+    origin: originIata,
+    departureRange: { from: departISO, to: addDays(departISO, 7) },
+    // niente duration: più permissivo in sandbox
+    maxPrice: budget ? Math.floor(budget * 0.5) : undefined,
+  }));
+
+  // C) range di 21 giorni (ancora più permissivo)
+  attempts.push(() => inspirationQuery({
+    origin: originIata,
+    departureRange: { from: departISO, to: addDays(departISO, 21) },
+  }));
+
+  // D) ultima spiaggia: nessuna data (dataset generale)
+  attempts.push(() => inspirationQuery({ origin: originIata }));
+
+  for (const run of attempts) {
+    const r = await run();
+    if (r.ok && r.data.length > 0) return r.data;
+  }
+  // Se proprio nessun tentativo ha dato risultati:
+  throw new Error('Inspiration search failed (no data for given constraints)');
+}
+
+/** ========== Flight Offers ========== */
 interface ASeg { departure?: { at?: string }; arrival?: { at?: string } }
 interface AItin { duration?: string; segments?: ASeg[] }
 interface AOffer { itineraries?: AItin[]; price?: { grandTotal?: string; total?: string }; validatingAirlineCodes?: string[]; carrierCode?: string }
@@ -284,7 +342,6 @@ async function fetchTrend(city: string, themeHint: string): Promise<WebSignals |
   if (!res.ok) return undefined;
   const j = (await res.json()) as SerpNewsResp;
   const items = (j.news_results ?? []).slice(0, 5).filter(x => x.title && x.link);
-  // punteggio semplice: più articoli recenti => punteggio più alto
   const trendScore = Math.min(1, items.length / 5);
   const articles: TrendArticle[] = items.map(x => ({ title: x.title!, link: x.link!, published: x.date }));
   return { trendScore, articles };
@@ -299,7 +356,7 @@ export async function POST(req: Request) {
     const party = Math.max(1, Number(body.party || 2));
     const nights = Math.max(1, Number(body.nights || 7));
     const budget = body.budget ? Number(body.budget) : undefined;
-    const theme = String(body.theme || 'mare'); // usato solo come hint per news
+    const theme = String(body.theme || 'mare'); // solo hint per news
 
     // Date: month=YYYY-MM o startDate=YYYY-MM-DD
     let startDate = String(body.startDate || '');
@@ -323,15 +380,13 @@ export async function POST(req: Request) {
     }
     const { startISO, endISO } = nightsWindow(startDate, nights);
 
-    // Prepara origin IATA
+    // Origin → IATA (accetta anche alias in ITA/EN)
     const originIata = await resolveIATA(originInput);
     if (!originIata) return NextResponse.json({ error: 'Origin non riconosciuta' }, { status: 400 });
 
-    // Quota del budget per i voli (greedy 45%)
-    const flightCap = budget ? Math.max(1, Math.floor(budget * 0.45)) : undefined;
+    // 1) Mete dinamiche via Inspiration (con fallback interno)
+    const insp = await inspiration(originIata, startISO, nights, budget);
 
-    // 1) Mete dinamiche via Inspiration
-    const insp = await inspiration(originIata, startISO, nights, flightCap);
     // prendi top 12 per prezzo
     const sorted = insp
       .map(x => ({ dest: String(x.destination), price: Number(x.price?.total ?? NaN), depart: x.departureDate ?? startISO, ret: x.returnDate ?? endISO }))
@@ -345,10 +400,11 @@ export async function POST(req: Request) {
       if (proposals.length >= 5) break;
       try {
         const destIata = item.dest;
+
         // lookup nome città/geo
         const meta = await amadeusCityLookupByIata(destIata);
         const cityName = meta.city;
-        const depart = startISO;    // usiamo le date scelte dall’utente (non sempre le date "ispirazione" hanno disponibilità)
+        const depart = startISO;
         const ret = endISO;
 
         // 2) voli A/R (per TUTTO il gruppo)
@@ -365,7 +421,7 @@ export async function POST(req: Request) {
         const perNight = Math.round(basePerNightGuess(cityName) * seasonalFactor(month));
         const lodgingTotal = perNight * nights;
 
-        // 4) link Google Hotels/Maps
+        // 4) link Google
         const { hotels, maps } = googleLinks(cityName, depart, ret, meta.lat, meta.lon);
 
         // 5) web signals (opzionale)
@@ -409,10 +465,10 @@ export async function POST(req: Request) {
     }
 
     if (!proposals.length) {
-      return NextResponse.json({ error: 'Nessuna proposta trovata: prova a cambiare mese/durata/budget.' }, { status: 404 });
+      return NextResponse.json({ error: 'Nessuna proposta trovata: allarga date o rimuovi vincoli di budget.' }, { status: 404 });
     }
 
-    // ranking finale: budget first, poi (trendScore desc), poi prezzo crescente
+    // ranking finale: prima entro budget, poi trend score, poi prezzo
     proposals.sort((a, b) => {
       if (a.underBudget && !b.underBudget) return -1;
       if (!a.underBudget && b.underBudget) return 1;
